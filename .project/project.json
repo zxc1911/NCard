@@ -1,0 +1,45 @@
+{
+  "$schema": "../schemas/project.schema.json",
+  "project_id": "p_q5tc",
+  "author": {
+    "id": "2028527314"
+  },
+  "entry": "main.lua",
+  "version": "1.0.0",
+  "taptap_publish": {
+    "title": "牛顿牌",
+    "description": "<game description>",
+    "category": "puzzle",
+    "screen_orientation": "landscape",
+    "collection_type": "sce",
+    "trial_note": "<developer's note>",
+    "transparent": false,
+    "app_platforms": "1,2",
+    "developer_id": 429013,
+    "app_id": 891619,
+    "miniapp_id": "tapmc1xqb9hdb28j8j"
+  },
+  "assets": {
+    "icon": "./game_material/ICON_2026-07-22T13-57-14_01.png",
+    "screenshots": [
+      "./game_material/SCREENSHOT_2026-07-22T13-57-14_01.png",
+      "./game_material/SCREENSHOT_2026-07-22T13-57-14_02.jpg",
+      "./game_material/SCREENSHOT_2026-07-22T13-57-14_03.png"
+    ],
+    "promotional_image": "./game_material/PROMO_2026-07-22T13-57-14_01.jpg",
+    "icon_url": "https://tapcode-sce.spark.xd.com/assets/game_material/牛顿牌/ICON_2026-07-22T13-57-14_01.png",
+    "screenshot_urls": [
+      "https://tapcode-sce.spark.xd.com/assets/game_material/牛顿牌/SCREENSHOT_2026-07-22T13-57-14_01.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/牛顿牌/SCREENSHOT_2026-07-22T13-57-14_02.jpg",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/牛顿牌/SCREENSHOT_2026-07-22T13-57-14_03.png"
+    ],
+    "promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/牛顿牌/PROMO_2026-07-22T13-57-14_01.jpg",
+    "cover_horizontal": "./game_material/COVER_HORIZONTAL_2026-07-22T13-58-30_01.png",
+    "cover_horizontal_url": "https://tapcode-sce.spark.xd.com/assets/game_material/牛顿牌/COVER_HORIZONTAL_2026-07-22T13-58-30_01.png",
+    "cover_vertical": "./game_material/COVER_VERTICAL_2026-07-22T13-59-31_01.png",
+    "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/牛顿牌/COVER_VERTICAL_2026-07-22T13-59-31_01.png"
+  },
+  "metadata": {
+    "updated_at": "2026-07-22T14:00:41.899Z"
+  }
+}

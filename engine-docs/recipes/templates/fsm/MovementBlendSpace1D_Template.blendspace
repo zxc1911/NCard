@@ -1,0 +1,11 @@
+{
+    "_usage": "将 $PLACEHOLDER$ 替换为实际的动画路径或 uuid://",
+    "type": "BlendSpace1D",
+    "name": "MovementBlendSpace",
+    "parameter": "moveSpeed",
+    "points": [
+        { "value": 0, "animation": "$IDLE$", "speed": 1.0 },
+        { "value": 2, "animation": "$WALK$", "speed": 1.0 },
+        { "value": 5, "animation": "$RUN$", "speed": 1.0 }
+    ]
+}

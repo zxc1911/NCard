@@ -1,0 +1,25 @@
+{
+    "_usage": "将 $PLACEHOLDER$ 替换为实际的动画 uuid://。后方(±180°)使用相同动画，需同时注册两个点。±91° 点用于区分左后/右后方向。",
+    "type": "BlendSpace2D",
+    "name": "LocomotionPolar",
+    "mode": "polar",
+    "parameterX": "direction",
+    "parameterY": "moveSpeed",
+    "points": [
+        { "x": 0.0,    "y": 0.0, "animation": "$IDLE$",           "speed": 1.0 },
+        { "x": 0.0,    "y": 2.0, "animation": "$WALK_FORWARD$",   "speed": 1.0 },
+        { "x": 0.0,    "y": 5.0, "animation": "$RUN_FORWARD$",    "speed": 1.0 },
+        { "x": 180.0,  "y": 2.0, "animation": "$WALK_BACKWARD$",  "speed": 1.0 },
+        { "x": 180.0,  "y": 5.0, "animation": "$RUN_BACKWARD$",   "speed": 1.0 },
+        { "x": -180.0, "y": 2.0, "animation": "$WALK_BACKWARD$",  "speed": 1.0 },
+        { "x": -180.0, "y": 5.0, "animation": "$RUN_BACKWARD$",   "speed": 1.0 },
+        { "x": 90.0,   "y": 2.0, "animation": "$WALK_RIGHT$",     "speed": 1.0 },
+        { "x": 90.0,   "y": 5.0, "animation": "$RUN_RIGHT$",      "speed": 1.0 },
+        { "x": -90.0,  "y": 2.0, "animation": "$WALK_LEFT$",      "speed": 1.0 },
+        { "x": -90.0,  "y": 5.0, "animation": "$RUN_LEFT$",       "speed": 1.0 },
+        { "x": -91.0,  "y": 2.0, "animation": "$WALK_LEFT_BACK$", "speed": 1.0 },
+        { "x": 91.0,   "y": 2.0, "animation": "$WALK_RIGHT_BACK$","speed": 1.0 },
+        { "x": -91.0,  "y": 5.0, "animation": "$RUN_LEFT_BACK$",  "speed": 1.0 },
+        { "x": 91.0,   "y": 5.0, "animation": "$RUN_RIGHT_BACK$", "speed": 1.0 }
+    ]
+}
