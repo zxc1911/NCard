@@ -69,7 +69,26 @@ local function BuildVillage()
         }
     end
 
+    portals["19:14"] = {
+        mode = "firstPerson",
+        roomId = "six_face_room",
+        returnMap = "village",
+        returnX = 14,
+        returnY = 20,
+        returnDirection = "down",
+    }
+
     local objects = {
+        {
+            kind = "exitDoor",
+            asset = "exitDoorOrthogonal",
+            x = 14,
+            y = 18,
+            w = 1,
+            h = 1,
+            solid = true,
+            draw = { w = 1.35, h = 1.75, ox = -0.18, oy = -0.75 },
+        },
         { kind = "well", x = 17, y = 11, w = 1, h = 1, solid = true },
         { kind = "tree", x = 2, y = 2, w = 1, h = 1, solid = true, draw = { w = 2, h = 3, ox = -0.5, oy = -2 } },
         { kind = "tree", x = 26, y = 4, w = 1, h = 1, solid = true, draw = { w = 2, h = 3, ox = -0.5, oy = -2 } },
@@ -291,6 +310,161 @@ local INTERIORS = {
     },
 }
 
+local FIRST_PERSON_ROOMS = {
+    six_face_room = {
+        id = "six_face_room",
+        name = "高塔 · 六面谜室",
+        initialView = "door",
+        views = {
+            door = {
+                name = "塔纹章之门",
+                image = "fpDoor",
+                left = "shelves",
+                right = "window",
+                up = "ceiling",
+                down = "floor",
+                hotspot = { x = 0.39, y = 0.18, w = 0.22, h = 0.64 },
+                target = {
+                    hidePortrait = true,
+                    name = "塔纹章之门",
+                    lines = {
+                        "黄铜纹章像一座倒悬的高塔。门把手很冷。",
+                        "这扇门通往垂环镇。按下离开按钮即可返回。",
+                    },
+                },
+            },
+            window = {
+                name = "高塔之窗",
+                image = "fpWindow",
+                left = "door",
+                right = "mirror",
+                up = "ceiling",
+                down = "floor",
+                hotspot = {
+                    x = 0.35, y = 0.10, w = 0.30, h = 0.58,
+                    objectId = "tower_blocks",
+                    acceptedCard = "tower_ink",
+                    effectName = "六枚机关块",
+                    effectLines = {
+                        "塔影墨水渗入铜块的刻痕，六枚机关块依次转向。",
+                        "它们最终拼成一句话：镜中缺失的墙，藏在鸟鸣之后。",
+                    },
+                },
+                target = {
+                    hidePortrait = true,
+                    name = "拱形窗",
+                    lines = {
+                        "窗外的塔影没有随云层移动。",
+                        "六枚铜块排列在桌面上，其中一枚刻着向下的箭头。",
+                    },
+                },
+            },
+            mirror = {
+                name = "裂镜",
+                image = "fpMirror",
+                left = "window",
+                right = "shelves",
+                up = "ceiling",
+                down = "floor",
+                hotspot = {
+                    x = 0.33, y = 0.08, w = 0.34, h = 0.58,
+                    objectId = "cracked_mirror",
+                    acceptedCard = "mirror_dust",
+                    effectName = "裂开的镜子",
+                    effectLines = {
+                        "镜尘沿裂纹发出银光，迟缓的倒影终于与你同步。",
+                        "第七面墙的影子里，浮现出一只上紧发条的机械鸟。",
+                    },
+                },
+                target = {
+                    hidePortrait = true,
+                    name = "裂开的镜子",
+                    lines = {
+                        "镜中的房间比现实多出第七面墙。",
+                        "你的倒影慢了半拍才抬起头。",
+                    },
+                },
+            },
+            shelves = {
+                name = "标本书架",
+                image = "fpShelves",
+                left = "mirror",
+                right = "door",
+                up = "ceiling",
+                down = "floor",
+                hotspot = {
+                    x = 0.40, y = 0.38, w = 0.18, h = 0.32,
+                    objectId = "mechanical_bird",
+                    acceptedCard = "clockwork_spring",
+                    effectName = "机械鸟标本",
+                    effectLines = {
+                        "发条嵌入胸腔，机械鸟抖落灰尘，短促地鸣叫六声。",
+                        "每次鸣叫都指向不同方向，最后停在天花板的吊灯上。",
+                    },
+                },
+                target = {
+                    hidePortrait = true,
+                    name = "机械鸟标本",
+                    lines = {
+                        "机械鸟的胸腔里藏着三个旋钮，全都指向同一个方向。",
+                        "空相框背后写着：先看脚下，再看头顶。",
+                    },
+                },
+            },
+            ceiling = {
+                name = "六烛天花板",
+                image = "fpCeiling",
+                down = "door",
+                left = "shelves",
+                right = "window",
+                hotspot = {
+                    x = 0.35, y = 0.20, w = 0.30, h = 0.55,
+                    objectId = "six_candle_lamp",
+                    acceptedCard = "ember_rune",
+                    effectName = "六角吊灯",
+                    effectLines = {
+                        "余烬符化作六点火光，依次点亮吊灯上的蜡烛。",
+                        "锁链被热力拉直，暗门深处随之响起清脆的开锁声。",
+                    },
+                },
+                target = {
+                    hidePortrait = true,
+                    name = "六角吊灯",
+                    lines = {
+                        "六根蜡烛围成不完整的圆，中央垂着一条生锈锁链。",
+                        "木梁上刻着一把钥匙，但那只是浅浅的凹痕。",
+                    },
+                },
+            },
+            floor = {
+                name = "暗门地板",
+                image = "fpFloor",
+                up = "door",
+                left = "shelves",
+                right = "window",
+                hotspot = {
+                    x = 0.31, y = 0.16, w = 0.40, h = 0.68,
+                    objectId = "floor_hatch",
+                    acceptedCard = "brass_key",
+                    effectName = "地毯下的暗门",
+                    effectLines = {
+                        "黄铜钥匙没入锁孔，六枚石片同时向外滑开。",
+                        "暗门已经解锁，但更深处的道路仍被塔的黑暗吞没。",
+                    },
+                },
+                target = {
+                    hidePortrait = true,
+                    name = "地毯下的暗门",
+                    lines = {
+                        "六枚石片围住钥匙孔，却没有一枚能插进去。",
+                        "暗门下面传来缓慢而均匀的敲击声。",
+                    },
+                },
+            },
+        },
+    },
+}
+
 local function BuildInterior(id)
     local spec = INTERIORS[id]
     local width, height = 13, 11
@@ -364,6 +538,10 @@ end
 function Maps.Get(id)
     if id == "village" then return BuildVillage() end
     return BuildInterior(id)
+end
+
+function Maps.GetFirstPersonRoom(id)
+    return FIRST_PERSON_ROOMS[id]
 end
 
 function Maps.IsSolid(map, x, y)
