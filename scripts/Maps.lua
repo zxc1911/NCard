@@ -1,5 +1,11 @@
 local Maps = {}
 
+local FINE_CELLS_PER_TILE = 4
+
+local function FineCellKey(x, y)
+    return tostring(y) .. ":" .. tostring(x)
+end
+
 local function Fill(width, height, value)
     local tiles = {}
     for y = 1, height do
@@ -44,84 +50,42 @@ local function AddObjectCollision(solids, object)
 end
 
 local function BuildVillage()
-    local width, height = 28, 22
+    local width, height = 28, 21
     local tiles = Fill(width, height, "grass")
-    Rect(tiles, 12, 1, 16, height, "road")
-    Rect(tiles, 3, 10, 25, 13, "road")
-    Rect(tiles, 9, 15, 19, 20, "plaza")
-    Rect(tiles, 10, 16, 18, 19, "tower")
-
-    local buildings = {
-        { id = "home", target = "home_lower", name = "候选者之家", x = 4, y = 3, w = 6, h = 5, doorX = 7, doorY = 8 },
-        { id = "guild", name = "勇者公会", x = 18, y = 3, w = 7, h = 6, doorX = 21, doorY = 9 },
-        { id = "inn", name = "登塔人旅店", x = 3, y = 14, w = 6, h = 5, doorX = 6, doorY = 19 },
-        { id = "forge", name = "风轮工坊", x = 20, y = 14, w = 6, h = 5, doorX = 23, doorY = 19 },
-    }
-
     local solids = {}
-    local portals = {}
-    for _, building in ipairs(buildings) do
-        AddSolidRect(solids, building.x, building.y, building.w, building.h)
-        portals[building.doorY .. ":" .. building.doorX] = {
-            target = building.target or building.id,
-            x = 7,
-            y = 9,
-        }
-    end
 
-    portals["19:14"] = {
-        mode = "firstPerson",
-        roomId = "six_face_room",
-        returnMap = "village",
-        returnX = 14,
-        returnY = 20,
-        returnDirection = "down",
+    -- 外景暂不启用碰撞，只保留房屋入口传送。
+    local portals = {
+        ["11:10"] = { target = "home_lower", x = 7, y = 9 },
+        ["16:14"] = { target = "guild", x = 7, y = 9 },
+        ["12:18"] = { target = "inn", x = 7, y = 9 },
+        ["18:21"] = { target = "forge", x = 7, y = 9 },
     }
-
-    local objects = {
-        {
-            kind = "exitDoor",
-            asset = "exitDoorOrthogonal",
-            x = 14,
-            y = 18,
-            w = 1,
-            h = 1,
-            solid = true,
-            draw = { w = 1.35, h = 1.75, ox = -0.18, oy = -0.75 },
-        },
-        { kind = "well", x = 17, y = 11, w = 1, h = 1, solid = true },
-        { kind = "tree", x = 2, y = 2, w = 1, h = 1, solid = true, draw = { w = 2, h = 3, ox = -0.5, oy = -2 } },
-        { kind = "tree", x = 26, y = 4, w = 1, h = 1, solid = true, draw = { w = 2, h = 3, ox = -0.5, oy = -2 } },
-        { kind = "flowers", x = 9, y = 9, w = 1, h = 1 },
-        { kind = "flowers", x = 18, y = 13, w = 1, h = 1 },
-        { kind = "sign", x = 10, y = 12, w = 1, h = 1, solid = true },
-    }
-    for _, object in ipairs(objects) do
-        AddObjectCollision(solids, object)
-    end
 
     return {
         id = "village",
         name = "塔环国 · 垂环镇",
-        subtitle = "道路环绕世界塔延伸，勇者的故事从这里开始。",
+        subtitle = "世界塔之门俯视着城墙内的山谷村庄。",
         width = width,
         height = height,
+        backgroundImage = "villageBackground",
+        collisionDisabled = true,
         tiles = tiles,
-        buildings = buildings,
+        buildings = {},
         solids = solids,
         portals = portals,
-        spawn = { x = 7, y = 9 },
+        spawn = { x = 14, y = 17 },
         npcs = {
             {
-                id = "mira", name = "米拉", x = 11, y = 12, color = "green", sprite = "npcMira",
+                id = "mira", name = "米拉", x = 12, y = 11, color = "green", sprite = "npcMira", solid = false,
                 portrait = "image/村民米拉像素头像_20260727071205.png",
                 lines = {
-                    "洛恩，你终于出门啦！今天可是勇者候选登记日。",
-                    "一直沿着石路向东走，红屋顶的建筑就是勇者公会。",
+                    "洛恩，你终于来了！世界塔的大门就在北面石阶尽头。",
+                    "中央的红褐色宫殿负责登记候选者，沿主路向北就能看见。",
                 },
             },
         },
-        objects = objects,
+        objects = {},
         features = {},
     }
 end
@@ -186,7 +150,7 @@ local INTERIORS = {
         floor = "lowerFloor",
         spawn = { x = 7, y = 9 },
         portals = {
-            { x = 7, y = 11, target = "village", spawnX = 7, spawnY = 9, kind = "exitDoor" },
+            { x = 7, y = 11, target = "village", spawnX = 10, spawnY = 12, kind = "exitDoor" },
         },
         transitions = {
             {
@@ -237,7 +201,7 @@ local INTERIORS = {
     guild = {
         name = "勇者公会", subtitle = "候选者在这里立下登塔誓约。", floor = "stoneFloor",
         spawn = { x = 7, y = 9 },
-        portals = { { x = 7, y = 11, target = "village", spawnX = 21, spawnY = 10, kind = "exitDoor" } },
+        portals = { { x = 7, y = 11, target = "village", spawnX = 14, spawnY = 17, kind = "exitDoor" } },
         npcs = {
             {
                 id = "ada", name = "公会长艾达", x = 7, y = 3, color = "red", sprite = "npcAda",
@@ -266,7 +230,7 @@ local INTERIORS = {
     inn = {
         name = "登塔人旅店", subtitle = "旅人交换着楼层传闻。", floor = "lowerFloor",
         spawn = { x = 7, y = 9 },
-        portals = { { x = 7, y = 11, target = "village", spawnX = 6, spawnY = 20, kind = "exitDoor" } },
+        portals = { { x = 7, y = 11, target = "village", spawnX = 20, spawnY = 13, kind = "exitDoor" } },
         objects = {
             { kind = "rugLong", x = 5, y = 7, w = 3, h = 2, layer = "floor", draw = { w = 3, h = 2 } },
             { kind = "counter", asset = "counterHorizontal", orientation = "horizontal", x = 2, y = 3, w = 4, h = 1, solid = true, draw = { w = 4, h = 1.35, oy = -0.35 } },
@@ -289,7 +253,7 @@ local INTERIORS = {
     forge = {
         name = "风轮工坊", subtitle = "这里打造抵抗高层风压的装备。", floor = "stoneFloor",
         spawn = { x = 7, y = 9 },
-        portals = { { x = 7, y = 11, target = "village", spawnX = 23, spawnY = 20, kind = "exitDoor" } },
+        portals = { { x = 7, y = 11, target = "village", spawnX = 21, spawnY = 17, kind = "exitDoor" } },
         objects = {
             { kind = "rugLong", x = 5, y = 7, w = 3, h = 2, layer = "floor", draw = { w = 3, h = 2 } },
             { kind = "anvil", asset = "anvilOrthogonal", x = 4, y = 5, w = 1, h = 1, solid = true },
@@ -340,6 +304,21 @@ local FIRST_PERSON_ROOMS = {
                 right = "mirror",
                 up = "ceiling",
                 down = "floor",
+                cardTargets = {
+                    {
+                        x = 0.66,
+                        y = 0.17,
+                        w = 0.12,
+                        h = 0.18,
+                        objectId = "gravity_letter",
+                        acceptedCard = "gravity_formula",
+                        effectName = "高处的信件",
+                        effectLines = {
+                            "F=MG 的符号化为一道向下的箭头，信件终于受到重力牵引。",
+                            "它从高处飘落，轻轻落在窗边书桌上。",
+                        },
+                    },
+                },
                 hotspot = {
                     x = 0.35, y = 0.10, w = 0.30, h = 0.58,
                     objectId = "tower_blocks",
@@ -465,6 +444,200 @@ local FIRST_PERSON_ROOMS = {
     },
 }
 
+local OPTION_ROOMS = {
+    home_upper = {
+        name = "候选者之家 · 二楼",
+        subtitle = "晨光洒进宽敞的二楼起居室，通往一楼的阶梯位于西南角。",
+        width = 18,
+        height = 10,
+        backgroundImage = "optionRoomUpper",
+        spawn = { x = 5, y = 7 },
+        portals = {
+            {
+                x = 2,
+                y = 3,
+                mode = "firstPerson",
+                roomId = "six_face_room",
+                returnMap = "home_upper",
+                returnX = 2,
+                returnY = 4,
+                returnDirection = "down",
+            },
+        },
+        transitions = {
+            {
+                id = "stairs_down",
+                x = 1,
+                y = 8,
+                w = 2,
+                h = 2,
+                target = "home_lower",
+                spawnX = 4,
+                spawnY = 7,
+                proximity = 0.9,
+            },
+        },
+        -- 碰撞设计（18×10）：
+        -- 北侧桌柜/床铺与中央承重墙不可穿过；西南楼梯保持可接近。
+        -- 擦边按整格阻挡，中央墙在南侧留出绕行空间。
+        collision = {
+            { x = 2, y = 2, w = 1, h = 2 },
+            { x = 3, y = 3, w = 3, h = 2 },
+            { x = 7, y = 2, w = 3, h = 4 },
+            { x = 7, y = 5, w = 2, h = 1 },
+            { x = 10, y = 1, w = 1, h = 7 },
+            { x = 11, y = 2, w = 2, h = 2 },
+            { x = 11, y = 3, w = 1, h = 2 },
+            { x = 14, y = 2, w = 2, h = 3 },
+            { x = 11, y = 5, w = 2, h = 1 },
+            { x = 15, y = 5, w = 1, h = 3 },
+            { x = 14, y = 8, w = 2, h = 1 },
+            { x = 7, y = 8, w = 3, h = 2 },
+        },
+        features = {
+            {
+                id = "starter_chest",
+                kind = "chest",
+                hidden = true,
+                x = 8,
+                y = 5,
+                w = 1,
+                h = 1,
+                solid = false,
+                name = "二楼储物柜",
+                itemId = "healing_herb",
+                itemName = "药草",
+                amount = 3,
+                lines = { "储物柜里放着出发前准备好的补给。" },
+            },
+            {
+                id = "father_map",
+                kind = "map",
+                hidden = true,
+                x = 8,
+                y = 8,
+                w = 1,
+                h = 1,
+                solid = false,
+                name = "桌上的登塔笔记",
+                lines = { "摊开的笔记标出了塔的前九层，第九层旁留着父亲最后的字迹。" },
+            },
+        },
+    },
+    home_lower = {
+        name = "候选者之家 · 一楼",
+        subtitle = "壁炉、厨房与餐厅围绕中央起居区展开。",
+        width = 15,
+        height = 10,
+        backgroundImage = "optionRoomLower",
+        spawn = { x = 7, y = 8 },
+        portals = {
+            { x = 7, y = 10, target = "village", spawnX = 7, spawnY = 9 },
+        },
+        transitions = {
+            {
+                id = "stairs_up",
+                x = 2,
+                y = 7,
+                w = 2,
+                h = 2,
+                target = "home_upper",
+                spawnX = 4,
+                spawnY = 7,
+                proximity = 0.95,
+            },
+        },
+        npcs = {
+            {
+                id = "mother",
+                name = "母亲 · 塞拉",
+                x = 8,
+                y = 6,
+                color = "mother",
+                sprite = "npcMother",
+                portrait = "image/母亲塞拉像素头像_20260727072703.png",
+                lines = {
+                    "洛恩，早饭已经准备好了。今天就是候选登记的日子吧？",
+                    "你父亲也曾站在这扇门前，带着一样紧张又期待的表情。",
+                    "二楼的储物柜里有三株药草，出门前记得带上。",
+                    "不管你能爬到塔的第几层，这里永远是你的家。",
+                },
+            },
+        },
+        -- 碰撞设计（15×10）：
+        -- 西侧楼梯是触发区；沙发、壁炉、厨房、餐桌与隔墙均阻挡。
+        -- 南侧正门在 (7,10) 留出单格出口，避免门槛卡住自动传送。
+        collision = {
+            { x = 1, y = 2, w = 4, h = 1 },
+            { x = 1, y = 3, w = 4, h = 2 },
+            { x = 2, y = 2, w = 2, h = 2 },
+            { x = 7, y = 2, w = 2, h = 2 },
+            { x = 10, y = 2, w = 2, h = 2 },
+            { x = 13, y = 2, w = 3, h = 2 },
+            { x = 9, y = 1, w = 1, h = 4 },
+            { x = 9, y = 5, w = 1, h = 3 },
+            { x = 11, y = 5, w = 3, h = 3 },
+            { x = 14, y = 4, w = 1, h = 3 },
+            { x = 6, y = 4, w = 2, h = 3 },
+        },
+        features = {},
+    },
+}
+
+local function BuildOptionRoom(id)
+    local spec = OPTION_ROOMS[id]
+    local tiles = Fill(spec.width, spec.height, "stoneFloor")
+    local solids = {}
+
+    for x = 1, spec.width do
+        solids["1:" .. x] = true
+        solids[spec.height .. ":" .. x] = true
+    end
+    for y = 1, spec.height do
+        solids[y .. ":1"] = true
+        solids[y .. ":" .. spec.width] = true
+    end
+
+    for _, rect in ipairs(spec.collision or {}) do
+        AddSolidRect(solids, rect.x, rect.y, rect.w, rect.h)
+    end
+
+    local portals = {}
+    for _, portal in ipairs(spec.portals or {}) do
+        local key = portal.y .. ":" .. portal.x
+        solids[key] = nil
+        portals[key] = {
+            target = portal.target,
+            x = portal.spawnX,
+            y = portal.spawnY,
+            mode = portal.mode,
+            roomId = portal.roomId,
+            returnMap = portal.returnMap,
+            returnX = portal.returnX,
+            returnY = portal.returnY,
+            returnDirection = portal.returnDirection,
+        }
+    end
+
+    return {
+        id = id,
+        name = spec.name,
+        subtitle = spec.subtitle,
+        width = spec.width,
+        height = spec.height,
+        tiles = tiles,
+        solids = solids,
+        portals = portals,
+        transitions = spec.transitions or {},
+        spawn = spec.spawn,
+        npcs = spec.npcs or {},
+        features = spec.features or {},
+        objects = {},
+        buildings = {},
+        backgroundImage = spec.backgroundImage,
+    }
+end
+
 local function BuildInterior(id)
     local spec = INTERIORS[id]
     local width, height = 13, 11
@@ -537,6 +710,7 @@ end
 
 function Maps.Get(id)
     if id == "village" then return BuildVillage() end
+    if OPTION_ROOMS[id] ~= nil then return BuildOptionRoom(id) end
     return BuildInterior(id)
 end
 
@@ -544,11 +718,59 @@ function Maps.GetFirstPersonRoom(id)
     return FIRST_PERSON_ROOMS[id]
 end
 
+function Maps.ExpandCoarseSolids(map)
+    local fineSolids = {}
+    for key, solid in pairs(map.solids or {}) do
+        if solid then
+            local coarseYText, coarseXText = key:match("^(%-?%d+):(%-?%d+)$")
+            local coarseX = tonumber(coarseXText)
+            local coarseY = tonumber(coarseYText)
+            if coarseX ~= nil and coarseY ~= nil then
+                local startX = (coarseX - 1) * FINE_CELLS_PER_TILE + 1
+                local startY = (coarseY - 1) * FINE_CELLS_PER_TILE + 1
+                for fineY = startY, startY + FINE_CELLS_PER_TILE - 1 do
+                    for fineX = startX, startX + FINE_CELLS_PER_TILE - 1 do
+                        fineSolids[FineCellKey(fineX, fineY)] = true
+                    end
+                end
+            end
+        end
+    end
+    return fineSolids
+end
+
+function Maps.IsSolidAt(map, worldX, worldY)
+    if worldX < 0.5 or worldY < 0.5
+        or worldX >= map.width + 0.5 or worldY >= map.height + 0.5 then
+        return true
+    end
+
+    if map.collisionDisabled then return false end
+
+    local tileX = math.floor(worldX + 0.5)
+    local tileY = math.floor(worldY + 0.5)
+    if map.fineCollision then
+        local fineX = math.floor((worldX - 0.5) * FINE_CELLS_PER_TILE) + 1
+        local fineY = math.floor((worldY - 0.5) * FINE_CELLS_PER_TILE) + 1
+        if map.fineSolids ~= nil and map.fineSolids[FineCellKey(fineX, fineY)] then
+            return true
+        end
+    elseif map.solids[tileY .. ":" .. tileX] then
+        return true
+    end
+
+    for _, npc in ipairs(map.npcs or {}) do
+        if npc.solid ~= false and npc.x == tileX and npc.y == tileY then return true end
+    end
+    return false
+end
+
 function Maps.IsSolid(map, x, y)
     if x < 1 or y < 1 or x > map.width or y > map.height then return true end
+    if map.collisionDisabled then return false end
     if map.solids[y .. ":" .. x] then return true end
     for _, npc in ipairs(map.npcs or {}) do
-        if npc.x == x and npc.y == y then return true end
+        if npc.solid ~= false and npc.x == x and npc.y == y then return true end
     end
     return false
 end

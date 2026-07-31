@@ -55,6 +55,8 @@ local heroFrameTimer_ = 0.0
 local heroAnimationDirection_ = "down"
 local heroAnimationState_ = "idle"
 local TileToScreen
+local FillRect
+local StrokeRect
 local ResetHeroAnimation
 local LoadMap
 
@@ -167,13 +169,38 @@ local cardHandPanel_ = nil
 ---@type Widget|nil
 local cardFeedbackLabel_ = nil
 ---@type Widget|nil
+local cardTooltipPanel_ = nil
+---@type Widget|nil
+local cardTooltipNameLabel_ = nil
+---@type Widget|nil
+local cardTooltipDescriptionLabel_ = nil
+---@type Widget|nil
 local cardDragGhost_ = nil
 ---@type Widget|nil
 local cardDragNameLabel_ = nil
 ---@type Widget|nil
 local cardDragTypeLabel_ = nil
 local cardWidgets_ = {}
+local cardRestStyles_ = {}
 local cardHandDirty_ = false
+local FINE_CELLS_PER_TILE = 4
+local COLLISION_CLOUD_KEY = "tower2d/collision-editor/v2"
+local collisionEditor_ = {
+    active = false,
+    savePath = "collision-editor.json",
+    dirty = false,
+    cloudSavePending = false,
+    cloudSaveTimer = 0.0,
+    revision = 0,
+    pendingRevision = 0,
+}
+local collisionSavePayload_ = {
+    version = 2,
+    subcellsPerTile = FINE_CELLS_PER_TILE,
+    maps = {},
+}
+local UpdateWorldCamera
+local SetCollisionEditorMessage
 local EnterFirstPersonRoom
 local ExitFirstPersonRoom
 local SwitchFirstPersonView
@@ -181,6 +208,7 @@ local OpenDialogue
 local RebuildCardHand
 local CancelCardDrag
 local ResolveCardDrop
+local SetCardFeedback
 
 local function UpdateResolution()
     local physW = graphics:GetWidth()
@@ -271,7 +299,7 @@ local function UpdateGravityLetter(dt)
     end
 end
 
-local function SetCardFeedback(text, color)
+SetCardFeedback = function(text, color)
     if cardFeedbackLabel_ == nil then return end
     cardFeedbackLabel_:SetText(text)
     cardFeedbackLabel_:SetStyle({ fontColor = color })
@@ -279,28 +307,36 @@ local function SetCardFeedback(text, color)
     cardFeedbackTimer_ = 2.2
 end
 
-local function GlobalPointerPosition(event, widget)
-    local layout = widget:GetAbsoluteLayoutForHitTest()
-    if layout == nil then return event.x, event.y end
-    return layout.x + event.x, layout.y + event.y
-end
-
-local function SetCardRestStyle(widget)
+local function SetCardRestStyle(widget, restStyle)
+    restStyle = restStyle or { rotate = 0, translateY = 0, scale = 1.0, zIndex = 0 }
     widget:SetStyle({
-        scale = 1.0,
-        translateY = 0,
+        rotate = restStyle.rotate or 0,
+        scale = restStyle.scale or 1.0,
+        translateY = restStyle.translateY or 0,
         opacity = 1.0,
-        zIndex = 0,
+        zIndex = restStyle.zIndex or 0,
     })
 end
 
-local function SetCardHoverStyle(widget)
+local function SetCardHoverStyle(widget, card)
     widget:SetStyle({
-        scale = 1.14,
-        translateY = -24,
+        scale = 1.16,
+        rotate = 0,
+        translateY = -38,
         opacity = 1.0,
         zIndex = 220,
     })
+    if cardTooltipNameLabel_ ~= nil then
+        cardTooltipNameLabel_:SetText(card.name .. " · " .. card.type)
+        cardTooltipDescriptionLabel_:SetText(card.description)
+        cardTooltipPanel_:Show()
+    end
+end
+
+local function HideCardTooltip()
+    if cardTooltipPanel_ ~= nil and not cardDrag_.active then
+        cardTooltipPanel_:Hide()
+    end
 end
 
 local function UpdateCardDragGhost(x, y)
@@ -311,9 +347,401 @@ local function UpdateCardDragGhost(x, y)
     })
 end
 
+local function GetPhysicalPointerPosition()
+    local position = input:GetMousePosition()
+    return position.x, position.y
+end
+
+local function PhysicalToUIPointer(x, y)
+    local scale = math.max(0.001, UI.GetScale())
+    return x / scale, y / scale
+end
+
+local function GetLogicalPointerPosition()
+    local physicalX, physicalY = GetPhysicalPointerPosition()
+    return physicalX / dpr_, physicalY / dpr_
+end
+
+local function FineCollisionCellKey(x, y)
+    return tostring(y) .. ":" .. tostring(x)
+end
+
+local function SortedSolidKeys(solids)
+    local keys = {}
+    for key, solid in pairs(solids or {}) do
+        if solid then table.insert(keys, key) end
+    end
+    table.sort(keys)
+    return keys
+end
+
+local function EnsureFineCollision(map)
+    if map == nil or map.fineCollision then return end
+    map.fineSolids = Maps.ExpandCoarseSolids(map)
+    map.fineCollision = true
+end
+
+local function KeepPortalCellsWalkable(map)
+    for key in pairs(map.portals or {}) do
+        map.solids[key] = nil
+        local tileYText, tileXText = key:match("^(%d+):(%d+)$")
+        local tileX = tonumber(tileXText)
+        local tileY = tonumber(tileYText)
+        if tileX ~= nil and tileY ~= nil and map.fineSolids ~= nil then
+            local startX = (tileX - 1) * FINE_CELLS_PER_TILE + 1
+            local startY = (tileY - 1) * FINE_CELLS_PER_TILE + 1
+            for fineY = startY, startY + FINE_CELLS_PER_TILE - 1 do
+                for fineX = startX, startX + FINE_CELLS_PER_TILE - 1 do
+                    map.fineSolids[FineCollisionCellKey(fineX, fineY)] = nil
+                end
+            end
+        end
+    end
+end
+
+local function ApplySavedCollision(map)
+    if map == nil or map.backgroundImage == nil then return false end
+    local saved = collisionSavePayload_.maps[map.id]
+    if saved == nil then return false end
+
+    if saved.fineSolids ~= nil then
+        map.fineSolids = {}
+        for _, key in ipairs(saved.fineSolids) do
+            map.fineSolids[key] = true
+        end
+        map.fineCollision = true
+    else
+        map.solids = {}
+        for _, key in ipairs(saved) do
+            map.solids[key] = true
+        end
+        map.fineSolids = nil
+        map.fineCollision = false
+    end
+    KeepPortalCellsWalkable(map)
+    return true
+end
+
+local function LoadLocalCollisionPayload()
+    if not fileSystem:FileExists(collisionEditor_.savePath) then return end
+    local file = File(collisionEditor_.savePath, FILE_READ)
+    if not file:IsOpen() then return end
+    local ok, payload = pcall(cjson.decode, file:ReadString())
+    file:Close()
+    if ok and type(payload) == "table" and type(payload.maps) == "table" then
+        collisionSavePayload_ = payload
+        print("[Tower2D] Local collision data loaded")
+    end
+end
+
+local function WriteLocalCollisionPayload()
+    local file = File(collisionEditor_.savePath, FILE_WRITE)
+    if not file:IsOpen() then return false end
+    file:WriteString(cjson.encode(collisionSavePayload_))
+    file:Close()
+    return true
+end
+
+local function SaveCollisionCloudData()
+    if clientCloud == nil then
+        collisionEditor_.dirty = false
+        SetCollisionEditorMessage("碰撞已本地保存；登录后可同步云端")
+        print("[Tower2D] clientCloud unavailable; collision kept locally")
+        return
+    end
+    if collisionEditor_.cloudSavePending then return end
+    collisionEditor_.cloudSavePending = true
+    collisionEditor_.pendingRevision = collisionEditor_.revision
+    local savedRevision = collisionEditor_.pendingRevision
+    clientCloud:Set(COLLISION_CLOUD_KEY, cjson.encode(collisionSavePayload_), {
+        ok = function()
+            collisionEditor_.cloudSavePending = false
+            if collisionEditor_.revision == savedRevision then
+                collisionEditor_.dirty = false
+                SetCollisionEditorMessage("碰撞已云端保存，刷新后会自动恢复")
+            else
+                collisionEditor_.cloudSaveTimer = 0.1
+                SetCollisionEditorMessage("碰撞有新修改，继续同步云端…")
+            end
+            print("[Tower2D] Cloud collision data saved")
+        end,
+        error = function(code, reason)
+            collisionEditor_.cloudSavePending = false
+            SetCollisionEditorMessage("本地已保存；云端保存失败，可按 F5 重试")
+            print(string.format("[Tower2D] Cloud collision save failed: %s / %s", tostring(code), tostring(reason)))
+        end,
+        timeout = function()
+            collisionEditor_.cloudSavePending = false
+            SetCollisionEditorMessage("本地已保存；云端保存超时，可按 F5 重试")
+            print("[Tower2D] Cloud collision save timeout")
+        end,
+    })
+end
+
+local function SaveCollisionEditorData(saveCloudNow)
+    if currentMap_ == nil or currentMap_.backgroundImage == nil then return end
+    EnsureFineCollision(currentMap_)
+    collisionSavePayload_.version = 2
+    collisionSavePayload_.subcellsPerTile = FINE_CELLS_PER_TILE
+    collisionSavePayload_.maps[currentMap_.id] = {
+        fineSolids = SortedSolidKeys(currentMap_.fineSolids),
+    }
+
+    if WriteLocalCollisionPayload() then
+        SetCollisionEditorMessage("碰撞已本地保存，正在同步云端…")
+        print("[Tower2D] Local collision saved: " .. currentMap_.id)
+    end
+    collisionEditor_.revision = collisionEditor_.revision + 1
+    collisionEditor_.dirty = true
+    if saveCloudNow then
+        collisionEditor_.cloudSaveTimer = 0.0
+        SaveCollisionCloudData()
+    else
+        collisionEditor_.cloudSaveTimer = 0.8
+    end
+end
+
+local function LoadCollisionEditorData(map)
+    if ApplySavedCollision(map) then
+        print("[Tower2D] Collision loaded: " .. map.id)
+    end
+end
+
+local function LoadCollisionCloudData()
+    if clientCloud == nil then
+        print("[Tower2D] clientCloud unavailable; using local collision data")
+        return
+    end
+    clientCloud:Get(COLLISION_CLOUD_KEY, {
+        ok = function(values)
+            local jsonText = values[COLLISION_CLOUD_KEY]
+            if type(jsonText) ~= "string" or jsonText == "" then return end
+            local ok, payload = pcall(cjson.decode, jsonText)
+            if not ok or type(payload) ~= "table" or type(payload.maps) ~= "table" then return end
+            if collisionEditor_.dirty then
+                SaveCollisionCloudData()
+                return
+            end
+            collisionSavePayload_ = payload
+            WriteLocalCollisionPayload()
+            if currentMap_ ~= nil then ApplySavedCollision(currentMap_) end
+            print("[Tower2D] Cloud collision data loaded")
+        end,
+        error = function(code, reason)
+            print(string.format("[Tower2D] Cloud collision load failed: %s / %s", tostring(code), tostring(reason)))
+        end,
+        timeout = function()
+            print("[Tower2D] Cloud collision load timeout; using local data")
+        end,
+    })
+end
+
+local function IsCollisionEditorMap()
+    return not firstPerson_.active
+        and not dialog_.open
+        and not floorTransition_.active
+        and currentMap_ ~= nil
+        and currentMap_.id ~= "village"
+        and currentMap_.backgroundImage ~= nil
+end
+
+SetCollisionEditorMessage = function(text)
+    if modeHintLabel_ ~= nil then
+        modeHintLabel_:SetText(text)
+    end
+end
+
+local function ToggleCollisionEditor()
+    if collisionEditor_.active then
+        collisionEditor_.active = false
+        SetCollisionEditorMessage("方向键 / WASD 移动  ·  E / 空格 调查")
+        print("[Tower2D] Collision editor: off")
+        return
+    end
+    if not IsCollisionEditorMap() then
+        SetCollisionEditorMessage("当前地图不支持碰撞编辑；请进入带背景图的房间后按 F2")
+        print("[Tower2D] Collision editor unavailable on current map")
+        return
+    end
+    EnsureFineCollision(currentMap_)
+    collisionEditor_.active = true
+    SetCollisionEditorMessage("碰撞编辑：4×4 细网格  ·  左键切换并自动保存  ·  F5立即云存  ·  F2退出")
+    print("[Tower2D] Collision editor: on / " .. currentMap_.id)
+end
+
+local function RestoreSavedCollision()
+    if currentMap_ == nil or currentMap_.backgroundImage == nil then return end
+    LoadCollisionEditorData(currentMap_)
+    SetCollisionEditorMessage("已读取保存碰撞：左键切换格子")
+end
+
+local function HandleCollisionEditorPointer()
+    if not collisionEditor_.active or not IsCollisionEditorMap() then return end
+    if not input:GetMouseButtonPress(MOUSEB_LEFT) or UI.IsPointerOverUI() then return end
+
+    EnsureFineCollision(currentMap_)
+    if UpdateWorldCamera ~= nil then UpdateWorldCamera() end
+    local logicalX, logicalY = GetLogicalPointerPosition()
+    local subcellSize = TILE / FINE_CELLS_PER_TILE
+    local fineX = math.floor((logicalX + cameraX_) / subcellSize) + 1
+    local fineY = math.floor((logicalY + cameraY_) / subcellSize) + 1
+    if fineX < 1 or fineY < 1
+        or fineX > currentMap_.width * FINE_CELLS_PER_TILE
+        or fineY > currentMap_.height * FINE_CELLS_PER_TILE then
+        return
+    end
+
+    local key = FineCollisionCellKey(fineX, fineY)
+    if currentMap_.fineSolids[key] then
+        currentMap_.fineSolids[key] = nil
+    else
+        currentMap_.fineSolids[key] = true
+    end
+    local tileX = math.floor((fineX - 1) / FINE_CELLS_PER_TILE) + 1
+    local tileY = math.floor((fineY - 1) / FINE_CELLS_PER_TILE) + 1
+    local localX = (fineX - 1) % FINE_CELLS_PER_TILE + 1
+    local localY = (fineY - 1) % FINE_CELLS_PER_TILE + 1
+    SaveCollisionEditorData(false)
+    SetCollisionEditorMessage(string.format(
+        "已切换地图格(%d,%d) 子格(%d,%d)，正在自动保存…",
+        tileX,
+        tileY,
+        localX,
+        localY
+    ))
+    print(string.format(
+        "[Tower2D] Fine collision toggle: %s (%d,%d)",
+        currentMap_.fineSolids[key] and "solid" or "walkable",
+        fineX,
+        fineY
+    ))
+end
+
+local function DrawCollisionEditorOverlay()
+    if not collisionEditor_.active or not IsCollisionEditorMap() then return end
+
+    EnsureFineCollision(currentMap_)
+    local subcellSize = TILE / FINE_CELLS_PER_TILE
+    local fineWidth = currentMap_.width * FINE_CELLS_PER_TILE
+    local fineHeight = currentMap_.height * FINE_CELLS_PER_TILE
+    for fineY = 1, fineHeight do
+        for fineX = 1, fineWidth do
+            local sx = (fineX - 1) * subcellSize - cameraX_
+            local sy = (fineY - 1) * subcellSize - cameraY_
+            local key = FineCollisionCellKey(fineX, fineY)
+            local solid = currentMap_.fineSolids[key] == true
+            FillRect(
+                sx + 1,
+                sy + 1,
+                subcellSize - 2,
+                subcellSize - 2,
+                solid and { 214, 74, 74, 76 } or { 56, 205, 132, 18 }
+            )
+            StrokeRect(
+                sx,
+                sy,
+                subcellSize,
+                subcellSize,
+                solid and { 255, 111, 111, 165 } or { 117, 241, 169, 58 },
+                1
+            )
+        end
+    end
+
+    for tileY = 1, currentMap_.height do
+        for tileX = 1, currentMap_.width do
+            local sx, sy = TileToScreen(tileX, tileY)
+            StrokeRect(sx, sy, TILE, TILE, { 240, 240, 255, 105 }, 1)
+        end
+    end
+end
+
+local function UpdateCollisionEditorInput()
+    if input:GetKeyPress(KEY_F2) then
+        ToggleCollisionEditor()
+        return
+    end
+    if not collisionEditor_.active then return end
+    if input:GetKeyPress(KEY_F5) then
+        SaveCollisionEditorData(true)
+    elseif input:GetKeyPress(KEY_F9) then
+        RestoreSavedCollision()
+    end
+    HandleCollisionEditorPointer()
+end
+
+local function BeginCardDrag(card, widget, physicalX, physicalY)
+    if cardDrag_.active then return false end
+    local uiX, uiY = PhysicalToUIPointer(physicalX, physicalY)
+    cardDrag_.active = true
+    cardDrag_.card = card
+    cardDrag_.sourceWidget = widget
+    cardDrag_.pointerId = 0
+    cardDrag_.x = physicalX
+    cardDrag_.y = physicalY
+    widget:SetStyle({ opacity = 0.24, scale = 1.0, rotate = 0, translateY = 0, zIndex = 300 })
+    cardDragNameLabel_:SetText(card.name)
+    cardDragTypeLabel_:SetText(card.type)
+    cardDragGhost_:SetStyle({ borderColor = card.accent })
+    UpdateCardDragGhost(uiX, uiY)
+    cardDragGhost_:Show()
+    if cardTooltipPanel_ ~= nil then cardTooltipPanel_:Hide() end
+    print(string.format(
+        "[Tower2D] Card drag start: %s at physical %.1f, %.1f",
+        card.id,
+        physicalX,
+        physicalY
+    ))
+    return true
+end
+
+local function FindCardAtPointer(x, y)
+    for index = #CARD_DEFINITIONS, 1, -1 do
+        local card = CARD_DEFINITIONS[index]
+        local widget = cardWidgets_[card.id]
+        if widget ~= nil and widget:IsVisible() then
+            local rect = UI.GetVisualRect(widget)
+            if x >= rect.x and x <= rect.x + rect.w
+                and y >= rect.y and y <= rect.y + rect.h then
+                return card, widget
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function UpdateCardPointer()
+    if not firstPerson_.active then return end
+    local physicalX, physicalY = GetPhysicalPointerPosition()
+    local uiX, uiY = PhysicalToUIPointer(physicalX, physicalY)
+    if not cardDrag_.active then
+        if input:GetMouseButtonPress(MOUSEB_LEFT) and not dialog_.open then
+            local card, widget = FindCardAtPointer(uiX, uiY)
+            if card ~= nil then
+                BeginCardDrag(card, widget, physicalX, physicalY)
+            end
+        end
+        return
+    end
+
+    if input:GetMouseButtonDown(MOUSEB_LEFT) then
+        cardDrag_.x = physicalX
+        cardDrag_.y = physicalY
+        UpdateCardDragGhost(uiX, uiY)
+        return
+    end
+
+    local droppedCard = cardDrag_.card
+    CancelCardDrag()
+    ResolveCardDrop(droppedCard, physicalX, physicalY)
+end
+
 CancelCardDrag = function()
-    if cardDrag_.sourceWidget ~= nil then
-        SetCardRestStyle(cardDrag_.sourceWidget)
+    if cardDrag_.sourceWidget ~= nil and cardDrag_.card ~= nil then
+        SetCardRestStyle(
+            cardDrag_.sourceWidget,
+            cardRestStyles_[cardDrag_.card.id]
+        )
     end
     cardDrag_.active = false
     cardDrag_.card = nil
@@ -322,21 +750,46 @@ CancelCardDrag = function()
     if cardDragGhost_ ~= nil then cardDragGhost_:Hide() end
 end
 
-ResolveCardDrop = function(card, screenX, screenY)
+ResolveCardDrop = function(card, physicalX, physicalY)
     if not firstPerson_.active or firstPerson_.room == nil then
         SetCardFeedback("卡牌只能在谜室中使用。", { 232, 112, 96, 255 })
         return
     end
 
     local view = firstPerson_.room.views[firstPerson_.viewId]
-    local hotspot = view.hotspot
-    local normalizedX = screenX / math.max(1, logicalW_)
-    local normalizedY = screenY / math.max(1, logicalH_)
+    local physicalW = math.max(1, graphics:GetWidth())
+    local physicalH = math.max(1, graphics:GetHeight())
+    local normalizedX = physicalX / physicalW
+    local normalizedY = physicalY / physicalH
+    local hotspot = FindCardTarget(view, normalizedX, normalizedY)
+
+    if card.id == "gravity_formula" and firstPerson_.viewId == "window"
+        and not gameState_.solvedObjects.gravity_letter then
+        local letterCenterX = gravityLetter_.x + 0.0475
+        local letterCenterY = gravityLetter_.y + 0.055
+        local dx = normalizedX - letterCenterX
+        local dy = normalizedY - letterCenterY
+        if dx * dx + dy * dy <= 0.15 * 0.15 then
+            for _, target in ipairs(view.cardTargets or {}) do
+                if target.objectId == "gravity_letter" then
+                    hotspot = target
+                    break
+                end
+            end
+        end
+    end
+
+    print(string.format(
+        "[Tower2D] Card drop: %s physical %.1f, %.1f normalized %.3f, %.3f target=%s",
+        card.id,
+        physicalX,
+        physicalY,
+        normalizedX,
+        normalizedY,
+        hotspot and tostring(hotspot.objectId) or "none"
+    ))
+
     local overHotspot = hotspot ~= nil
-        and normalizedX >= hotspot.x
-        and normalizedX <= hotspot.x + hotspot.w
-        and normalizedY >= hotspot.y
-        and normalizedY <= hotspot.y + hotspot.h
 
     if not overHotspot then
         SetCardFeedback("卡牌没有接触到可作用的物品。", { 232, 112, 96, 255 })
@@ -357,6 +810,9 @@ ResolveCardDrop = function(card, screenX, screenY)
 
     gameState_.usedCards[card.id] = true
     gameState_.solvedObjects[hotspot.objectId] = true
+    if hotspot.objectId == "gravity_letter" then
+        gravityLetter_.velocity = 0.12
+    end
     cardHandDirty_ = true
     SetCardFeedback(card.name .. "生效了！", { 98, 220, 139, 255 })
     OpenDialogue({
@@ -367,77 +823,89 @@ ResolveCardDrop = function(card, screenX, screenY)
     print("[Tower2D] Card solved: " .. card.id .. " -> " .. hotspot.objectId)
 end
 
-local function CreateCardWidget(card)
+local CARD_WIDTH = 124
+local CARD_HEIGHT = 158
+
+local function CreateCardWidget(card, restStyle)
     local cardWidget
     cardWidget = UI.Card {
-        width = 108,
-        height = 138,
+        position = "absolute",
+        left = restStyle.left,
+        top = restStyle.top,
+        width = CARD_WIDTH,
+        height = CARD_HEIGHT,
+        rotate = restStyle.rotate,
+        scale = restStyle.scale,
+        translateY = restStyle.translateY,
+        zIndex = restStyle.zIndex,
         flexShrink = 0,
-        padding = 8,
+        padding = 9,
         gap = 5,
-        backgroundColor = { 27, 27, 58, 248 },
+        overflow = "visible",
+        backgroundColor = { 24, 31, 61, 252 },
+        borderWidth = 3,
         borderColor = card.accent,
-        transition = "scale 0.12 ease-out, translateY 0.12 ease-out, opacity 0.1 linear",
+        boxShadow = { { x = 5, y = 7, blur = 0, color = { 0, 0, 0, 125 } } },
+        transition = "scale 0.12 ease-out, translateY 0.12 ease-out, rotate 0.12 ease-out, opacity 0.1 linear",
         onPointerEnter = function(event, widget)
-            if not cardDrag_.active then SetCardHoverStyle(widget) end
+            if not cardDrag_.active then SetCardHoverStyle(widget, card) end
         end,
         onPointerLeave = function(event, widget)
-            if not cardDrag_.active then SetCardRestStyle(widget) end
+            if not cardDrag_.active then
+                SetCardRestStyle(widget, restStyle)
+                HideCardTooltip()
+            end
         end,
         onPointerDown = function(event, widget)
             if cardDrag_.active or not event:IsPrimaryAction() then return end
-            local x, y = GlobalPointerPosition(event, widget)
-            cardDrag_.active = true
-            cardDrag_.card = card
-            cardDrag_.sourceWidget = widget
+            local physicalX, physicalY = GetPhysicalPointerPosition()
+            BeginCardDrag(card, widget, physicalX, physicalY)
             cardDrag_.pointerId = event.pointerId
-            cardDrag_.x = x
-            cardDrag_.y = y
-            widget:SetStyle({ opacity = 0.28, scale = 1.0, translateY = 0, zIndex = 0 })
-            cardDragNameLabel_:SetText(card.name)
-            cardDragTypeLabel_:SetText(card.type)
-            cardDragGhost_:SetStyle({ borderColor = card.accent })
-            UpdateCardDragGhost(x, y)
-            cardDragGhost_:Show()
+            event:StopPropagation()
             event:PreventDefault()
-            print("[Tower2D] Card drag start: " .. card.id)
         end,
         onPointerMove = function(event, widget)
             if not cardDrag_.active or cardDrag_.pointerId ~= event.pointerId then return end
-            local x, y = GlobalPointerPosition(event, widget)
-            cardDrag_.x = x
-            cardDrag_.y = y
-            UpdateCardDragGhost(x, y)
+            local physicalX, physicalY = GetPhysicalPointerPosition()
+            local uiX, uiY = PhysicalToUIPointer(physicalX, physicalY)
+            cardDrag_.x = physicalX
+            cardDrag_.y = physicalY
+            UpdateCardDragGhost(uiX, uiY)
             event:PreventDefault()
         end,
         onPointerUp = function(event, widget)
             if not cardDrag_.active or cardDrag_.pointerId ~= event.pointerId then return end
-            local x, y = GlobalPointerPosition(event, widget)
+            local physicalX, physicalY = GetPhysicalPointerPosition()
             local droppedCard = cardDrag_.card
             CancelCardDrag()
-            ResolveCardDrop(droppedCard, x, y)
+            ResolveCardDrop(droppedCard, physicalX, physicalY)
+            event:StopPropagation()
             event:PreventDefault()
         end,
         children = {
             UI.Label {
                 text = card.type,
                 fontSize = 8,
+                fontWeight = "bold",
                 fontColor = card.accent,
                 alignSelf = "flex-end",
+                pointerEvents = "none",
             },
             UI.Panel {
-                height = 45,
+                height = 54,
                 alignItems = "center",
                 justifyContent = "center",
-                backgroundColor = { card.accent[1], card.accent[2], card.accent[3], 48 },
-                borderWidth = 1,
+                backgroundColor = { card.accent[1], card.accent[2], card.accent[3], 38 },
+                borderWidth = 2,
                 borderColor = card.accent,
                 pointerEvents = "none",
                 children = {
                     UI.Label {
                         text = "◆",
-                        fontSize = 20,
+                        fontSize = 24,
+                        fontWeight = "bold",
                         fontColor = card.accent,
+                        pointerEvents = "none",
                     },
                 },
             },
@@ -445,38 +913,108 @@ local function CreateCardWidget(card)
                 text = card.name,
                 fontSize = 11,
                 fontWeight = "bold",
-                fontColor = { 248, 236, 206, 255 },
+                fontColor = { 255, 245, 214, 255 },
                 textAlign = "center",
                 whiteSpace = "normal",
+                pointerEvents = "none",
             },
         },
     }
+    return cardWidget
+end
 
-    return UI.Tooltip {
-        content = card.name .. " · " .. card.type .. "\n" .. card.description,
-        position = "top",
-        delay = 0.12,
-        offset = 14,
-        maxWidth = 260,
-        fontSize = 10,
-        tooltipBgColor = { 254, 160, 2, 248 },
-        textColor = { 34, 23, 20, 255 },
-        borderWidth = 2,
-        borderColor = { 249, 95, 3, 255 },
-        children = { cardWidget },
-    }, cardWidget
+local HAND_SPANS_BY_COUNT = {
+    0,
+    12,
+    22,
+    30,
+    38,
+    46,
+    54,
+    60,
+    66,
+    72,
+}
+
+local function CalculateCardFanLayout(cardCount, screenWidth)
+    local layouts = {}
+    if cardCount <= 0 then return layouts end
+
+    local safeCount = math.max(1, math.min(10, cardCount))
+    local totalSpan = HAND_SPANS_BY_COUNT[safeCount]
+    local halfSpanRadians = math.rad(totalSpan * 0.5)
+    local cardScale = 1.0
+    if safeCount >= 7 then
+        cardScale = math.max(0.86, 1.0 - (safeCount - 6) * 0.035)
+    end
+
+    local radius = 360
+    if totalSpan > 0 then
+        local horizontalMargin = math.max(56, screenWidth * 0.08)
+        local availableHalfWidth = math.max(
+            150,
+            (screenWidth - horizontalMargin * 2 - CARD_WIDTH * cardScale) * 0.5
+        )
+        radius = math.min(radius, availableHalfWidth / math.sin(halfSpanRadians))
+    end
+    radius = math.max(245, radius)
+
+    local centerX = screenWidth * 0.5
+    local centerCardY = 88
+    local circleCenterY = centerCardY + radius
+    local angleStep = safeCount > 1 and totalSpan / (safeCount - 1) or 0
+
+    for index = 1, safeCount do
+        local angleDegrees = safeCount > 1
+            and (-totalSpan * 0.5 + (index - 1) * angleStep)
+            or 0
+        local angleRadians = math.rad(angleDegrees)
+        local cardCenterX = centerX + radius * math.sin(angleRadians)
+        local cardCenterY = circleCenterY - radius * math.cos(angleRadians)
+        layouts[index] = {
+            left = cardCenterX - CARD_WIDTH * 0.5,
+            top = cardCenterY - CARD_HEIGHT * 0.5,
+            rotate = angleDegrees,
+            translateY = 0,
+            scale = cardScale,
+            zIndex = index,
+            radius = radius,
+            circleCenterX = centerX,
+            circleCenterY = circleCenterY,
+        }
+    end
+    return layouts
 end
 
 RebuildCardHand = function()
     if cardHandPanel_ == nil then return end
     cardHandPanel_:ClearChildren()
     cardWidgets_ = {}
+    cardRestStyles_ = {}
+    local visibleCards = {}
     for _, card in ipairs(CARD_DEFINITIONS) do
         if not gameState_.usedCards[card.id] then
-            local tooltip, widget = CreateCardWidget(card)
-            cardHandPanel_:AddChild(tooltip)
-            cardWidgets_[card.id] = widget
+            table.insert(visibleCards, card)
         end
+    end
+
+    local layouts = CalculateCardFanLayout(#visibleCards, UI.GetWidth())
+    for index, card in ipairs(visibleCards) do
+        local restStyle = layouts[index]
+        local widget = CreateCardWidget(card, restStyle)
+        cardHandPanel_:AddChild(widget)
+        cardWidgets_[card.id] = widget
+        cardRestStyles_[card.id] = restStyle
+    end
+    if #visibleCards > 0 then
+        local sample = layouts[1]
+        print(string.format(
+            "[Tower2D] Card fan: count=%d radius=%.1f center=(%.1f, %.1f)",
+            #visibleCards,
+            sample.radius,
+            sample.circleCenterX,
+            sample.circleCenterY
+        ))
     end
     cardHandDirty_ = false
 end
@@ -642,18 +1180,50 @@ local function BuildUI()
 
     cardHandPanel_ = UI.Panel {
         position = "absolute",
-        left = "18%",
-        right = "18%",
-        bottom = 8,
-        height = 158,
-        flexDirection = "row",
-        justifyContent = "center",
-        alignItems = "flex-end",
-        gap = 8,
-        paddingTop = 18,
+        left = 0,
+        right = 0,
+        bottom = 0,
+        height = 220,
+        overflow = "visible",
         pointerEvents = "box-none",
         zIndex = 92,
         visible = false,
+    }
+
+    cardTooltipNameLabel_ = UI.Label {
+        text = "",
+        fontSize = 11,
+        fontWeight = "bold",
+        fontColor = { 34, 23, 20, 255 },
+        textAlign = "center",
+    }
+
+    cardTooltipDescriptionLabel_ = UI.Label {
+        text = "",
+        fontSize = 9,
+        fontColor = { 34, 23, 20, 255 },
+        whiteSpace = "normal",
+        textAlign = "center",
+    }
+
+    cardTooltipPanel_ = UI.Panel {
+        position = "absolute",
+        left = "34%",
+        right = "34%",
+        bottom = 190,
+        minHeight = 58,
+        paddingHorizontal = 12,
+        paddingVertical = 8,
+        gap = 4,
+        alignItems = "center",
+        backgroundColor = { 254, 160, 2, 248 },
+        borderWidth = 2,
+        borderColor = { 249, 95, 3, 255 },
+        boxShadow = { { x = 6, y = 6, blur = 0, color = { 0, 0, 0, 100 } } },
+        pointerEvents = "none",
+        zIndex = 240,
+        visible = false,
+        children = { cardTooltipNameLabel_, cardTooltipDescriptionLabel_ },
     }
 
     cardDragNameLabel_ = UI.Label {
@@ -825,6 +1395,7 @@ local function BuildUI()
             firstPersonControls_,
             cardHandPanel_,
             cardFeedbackLabel_,
+            cardTooltipPanel_,
             cardDragGhost_,
             dialogPanel_,
             transitionOverlay_,
@@ -850,7 +1421,12 @@ end
 local function UpdateWorldScale()
     if currentMap_ == nil then return end
 
-    if currentMap_.id == "village" then
+    if currentMap_.backgroundImage ~= nil then
+        local fitX = logicalW_ / currentMap_.width
+        local fitY = logicalH_ / currentMap_.height
+        TILE = math.floor(math.max(48, math.min(96, fitX, fitY)))
+        actorScale_ = TILE / 40
+    elseif currentMap_.id == "village" then
         TILE = math.floor(math.max(44, math.min(58, logicalH_ / 12.5)))
         actorScale_ = TILE / 40
     else
@@ -890,6 +1466,7 @@ end
 
 LoadMap = function(id, spawnX, spawnY)
     currentMap_ = Maps.Get(id)
+    LoadCollisionEditorData(currentMap_)
     UpdateWorldScale()
     player_.x = spawnX or currentMap_.spawn.x
     player_.y = spawnY or currentMap_.spawn.y
@@ -934,6 +1511,9 @@ EnterFirstPersonRoom = function(portal)
     if cardFeedbackLabel_ ~= nil then
         cardFeedbackLabel_:Hide()
     end
+    if cardTooltipPanel_ ~= nil then
+        cardTooltipPanel_:Hide()
+    end
     CancelCardDrag()
     RebuildCardHand()
     cardHandPanel_:Show()
@@ -953,6 +1533,7 @@ ExitFirstPersonRoom = function()
     CancelCardDrag()
     if cardHandPanel_ ~= nil then cardHandPanel_:Hide() end
     if cardFeedbackLabel_ ~= nil then cardFeedbackLabel_:Hide() end
+    if cardTooltipPanel_ ~= nil then cardTooltipPanel_:Hide() end
     firstPersonControls_:Hide()
     overworldControls_:Show()
     modeHintLabel_:SetText("方向键 / WASD 移动  ·  E / 空格 调查")
@@ -1166,9 +1747,7 @@ local function IsPositionBlocked(x, y)
         { x - radius, y + radius }, { x + radius, y + radius },
     }
     for _, point in ipairs(points) do
-        local tileX = math.floor(point[1] + 0.5)
-        local tileY = math.floor(point[2] + 0.5)
-        if Maps.IsSolid(currentMap_, tileX, tileY) then return true end
+        if Maps.IsSolidAt(currentMap_, point[1], point[2]) then return true end
     end
     return false
 end
@@ -1194,7 +1773,7 @@ local function UpdateHeroAnimation(dt)
         return
     end
 
-    local frameDuration = 0.075
+    local frameDuration = 1.0 / 24.0
     heroFrameTimer_ = heroFrameTimer_ + dt
     while heroFrameTimer_ >= frameDuration do
         heroFrameTimer_ = heroFrameTimer_ - frameDuration
@@ -1293,14 +1872,14 @@ local COLORS = {
     rug = { 109, 49, 69 },
 }
 
-local function FillRect(x, y, w, h, color)
+FillRect = function(x, y, w, h, color)
     nvgBeginPath(vg_)
     nvgRect(vg_, math.floor(x), math.floor(y), math.ceil(w), math.ceil(h))
     nvgFillColor(vg_, nvgRGBA(color[1], color[2], color[3], color[4] or 255))
     nvgFill(vg_)
 end
 
-local function StrokeRect(x, y, w, h, color, width)
+StrokeRect = function(x, y, w, h, color, width)
     nvgBeginPath(vg_)
     nvgRect(vg_, math.floor(x) + 0.5, math.floor(y) + 0.5, math.ceil(w) - 1, math.ceil(h) - 1)
     nvgStrokeColor(vg_, nvgRGBA(color[1], color[2], color[3], color[4] or 255))
@@ -1413,14 +1992,17 @@ local IMAGE_PATHS = {
     fpShelves = "image/六面谜室_书架_20260728112342.png",
     fpCeiling = "image/六面谜室_天花板_20260728112345.png",
     fpFloor = "image/六面谜室_地板_20260728112337.png",
-    heroWalkDown = "sprites/lorn_hero_chibi/walk_down.png",
-    heroWalkUp = "sprites/lorn_hero_chibi/walk_up.png",
-    heroWalkLeft = "sprites/lorn_hero_chibi/walk_left.png",
-    heroWalkRight = "sprites/lorn_hero_chibi/walk_right.png",
-    heroIdleDown = "sprites/lorn_hero_chibi/idle_down.png",
-    heroIdleUp = "sprites/lorn_hero_chibi/idle_up.png",
-    heroIdleLeft = "sprites/lorn_hero_chibi/idle_left.png",
-    heroIdleRight = "sprites/lorn_hero_chibi/idle_right.png",
+    optionRoomUpper = "image/edited_OptionRoom_2Nd清晰像素版_20260729155032.png",
+    optionRoomLower = "image/OptionRoom_1nd.png",
+    villageBackground = "image/塔环国全新方墙村庄地图_20260731065315.png",
+    heroWalkDown = "sprites/lorn_hero_hd2d/walk_down.png",
+    heroWalkUp = "sprites/lorn_hero_hd2d/walk_up.png",
+    heroWalkLeft = "sprites/lorn_hero_hd2d/walk_left.png",
+    heroWalkRight = "sprites/lorn_hero_hd2d/walk_right.png",
+    heroIdleDown = "sprites/lorn_hero_hd2d/idle_down.png",
+    heroIdleUp = "sprites/lorn_hero_hd2d/idle_up.png",
+    heroIdleLeft = "sprites/lorn_hero_hd2d/idle_left.png",
+    heroIdleRight = "sprites/lorn_hero_hd2d/idle_right.png",
 }
 
 local function LoadImages()
@@ -1559,6 +2141,10 @@ local function DrawObject(object)
 end
 
 local function DrawFeature(feature)
+    if feature.hidden then
+        return
+    end
+
     local x, y = TileToScreen(feature.x, feature.y)
     local key = feature.asset or feature.kind
     if feature.kind == "chest" then
@@ -1582,7 +2168,7 @@ local function DrawPlayer()
     local animation = HeroFrames[heroAnimationState_][player_.direction]
     local frame = animation.frames[math.min(heroFrameIndex_, #animation.frames)]
     local x, y = TileToScreen(player_.x, player_.y)
-    local canvasSize = 67 * actorScale_
+    local canvasSize = 64 * actorScale_
     local canvasX = x + TILE * 0.5 - canvasSize * 0.5
     local canvasY = y + TILE - canvasSize
     local directionName = player_.direction:sub(1, 1):upper() .. player_.direction:sub(2)
@@ -1601,6 +2187,27 @@ local function DrawFirstPersonRoom()
     local view = firstPerson_.room.views[firstPerson_.viewId]
     DrawImage(view.image, 0, 0, logicalW_, logicalH_)
 
+    if firstPerson_.viewId == "window" and gravityLetter_.active then
+        local letterX = gravityLetter_.x * logicalW_
+        local letterY = gravityLetter_.y * logicalH_
+        local letterW = logicalW_ * 0.095
+        local letterH = logicalH_ * 0.11
+        FillRect(letterX, letterY, letterW, letterH, { 238, 220, 174, 255 })
+        StrokeRect(letterX, letterY, letterW, letterH, { 92, 65, 46, 255 }, 3)
+        FillRect(letterX + letterW * 0.08, letterY + letterH * 0.44, letterW * 0.84, 3, { 136, 102, 68, 255 })
+        FillRect(letterX + letterW * 0.08, letterY + letterH * 0.66, letterW * 0.58, 3, { 136, 102, 68, 255 })
+        if not gravityLetter_.fallen then
+            StrokeRect(
+                0.66 * logicalW_,
+                0.17 * logicalH_,
+                0.12 * logicalW_,
+                0.18 * logicalH_,
+                cardDrag_.active and { 87, 211, 190, 220 } or { 219, 176, 98, 115 },
+                cardDrag_.active and 4 or 2
+            )
+        end
+    end
+
     local hotspot = view.hotspot
     if hotspot ~= nil then
         local x = hotspot.x * logicalW_
@@ -1611,12 +2218,8 @@ local function DrawFirstPersonRoom()
     end
 end
 
-local function DrawWorld()
-    if firstPerson_.active then
-        DrawFirstPersonRoom()
-        return
-    end
-
+UpdateWorldCamera = function()
+    if currentMap_ == nil or firstPerson_.active then return end
     local mapPixelW = currentMap_.width * TILE
     local mapPixelH = currentMap_.height * TILE
     local playerPixelX = (player_.x - 0.5) * TILE
@@ -1625,18 +2228,43 @@ local function DrawWorld()
     cameraY_ = math.max(0, math.min(mapPixelH - logicalH_, playerPixelY - logicalH_ * 0.5))
     if mapPixelW < logicalW_ then cameraX_ = -(logicalW_ - mapPixelW) * 0.5 end
     if mapPixelH < logicalH_ then cameraY_ = -(logicalH_ - mapPixelH) * 0.5 end
+end
+
+local function DrawWorld()
+    if firstPerson_.active then
+        DrawFirstPersonRoom()
+        return
+    end
+
+    UpdateWorldCamera()
+    local mapPixelW = currentMap_.width * TILE
+    local mapPixelH = currentMap_.height * TILE
 
     FillRect(0, 0, logicalW_, logicalH_, { 21, 24, 36 })
 
-    for y = 1, currentMap_.height do
-        for x = 1, currentMap_.width do
-            local sx, sy = TileToScreen(x, y)
-            local tile = currentMap_.tiles[y][x]
-            DrawTile(tile, sx, sy)
+    if currentMap_.backgroundImage ~= nil then
+        local backgroundX, backgroundY =
+            TileToScreen(1, 1)
+
+        DrawImage(
+            currentMap_.backgroundImage,
+            backgroundX,
+            backgroundY,
+            mapPixelW,
+            mapPixelH
+        )
+    else
+        for y = 1, currentMap_.height do
+            for x = 1, currentMap_.width do
+                local sx, sy = TileToScreen(x, y)
+                local tile = currentMap_.tiles[y][x]
+                DrawTile(tile, sx, sy)
+            end
         end
+
+        DrawHighWall()
     end
 
-    DrawHighWall()
     for _, building in ipairs(currentMap_.buildings or {}) do DrawBuilding(building) end
     for _, object in ipairs(currentMap_.objects or {}) do
         if object.layer == "floor" then DrawObject(object) end
@@ -1651,6 +2279,7 @@ local function DrawWorld()
 
     for _, npc in ipairs(currentMap_.npcs or {}) do DrawNpc(npc) end
     DrawPlayer()
+    DrawCollisionEditorOverlay()
 end
 
 local function DrawTransitionOverlay()
@@ -1687,13 +2316,29 @@ local function HandleFirstPersonNavigation()
 end
 
 local function HandleFirstPersonHotspotClick()
-    if not firstPerson_.active or cardDrag_.active or dialog_.open or UI.IsPointerOverUI() then return end
+    if cardDrag_.active then
+        return
+    end
+    if not firstPerson_.active or dialog_.open or UI.IsPointerOverUI() then return end
     if not input:GetMouseButtonPress(MOUSEB_LEFT) then return end
 
     local mousePos = input:GetMousePosition()
     local x = mousePos.x / dpr_ / logicalW_
     local y = mousePos.y / dpr_ / logicalH_
     local view = firstPerson_.room.views[firstPerson_.viewId]
+    if firstPerson_.viewId == "window" and gravityLetter_.fallen
+        and x >= gravityLetter_.x and x <= gravityLetter_.x + 0.095
+        and y >= gravityLetter_.y and y <= gravityLetter_.y + 0.11 then
+        OpenDialogue({
+            hidePortrait = true,
+            name = "落下的信",
+            lines = {
+                "信封正面写着：给仍相信万物会坠落的人。",
+                "里面只有一句话：法则不是答案，而是改变房间的钥匙。",
+            },
+        })
+        return
+    end
     local hotspot = view.hotspot
     if hotspot ~= nil
         and x >= hotspot.x and x <= hotspot.x + hotspot.w
@@ -1713,12 +2358,22 @@ function HandleUpdate(eventType, eventData)
     if cardHandDirty_ and firstPerson_.active and not cardDrag_.active then
         RebuildCardHand()
     end
+    UpdateGravityLetter(dt)
     UpdateDialogue(dt)
     UpdateFloorTransition(dt)
     UpdateTransitionOverlay()
+    UpdateCollisionEditorInput()
+    if collisionEditor_.dirty and not collisionEditor_.cloudSavePending
+        and collisionEditor_.cloudSaveTimer > 0 then
+        collisionEditor_.cloudSaveTimer = math.max(0, collisionEditor_.cloudSaveTimer - dt)
+        if collisionEditor_.cloudSaveTimer <= 0 then SaveCollisionCloudData() end
+    end
 
-    if firstPerson_.active then
+    if collisionEditor_.active then
         player_.moving = false
+    elseif firstPerson_.active then
+        player_.moving = false
+        UpdateCardPointer()
         HandleFirstPersonNavigation()
         HandleFirstPersonHotspotClick()
     elseif not dialog_.open and not floorTransition_.active then
@@ -1741,6 +2396,9 @@ end
 function HandleScreenMode(eventType, eventData)
     UpdateResolution()
     UpdateWorldScale()
+    if firstPerson_.active then
+        cardHandDirty_ = true
+    end
 end
 
 function Start()
@@ -1764,7 +2422,9 @@ function Start()
     })
     BuildUI()
     UpdateInventoryHUD()
-    LoadMap("home_upper")
+    LoadLocalCollisionPayload()
+    LoadMap("village")
+    LoadCollisionCloudData()
     ResetHeroAnimation()
 
     SubscribeToEvent(vg_, "NanoVGRender", "HandleNanoVGRender")

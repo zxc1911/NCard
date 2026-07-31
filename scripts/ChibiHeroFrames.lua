@@ -1,4 +1,5 @@
-local CELL = 67
+local CELL = 64
+local WALK_FRAME_COUNT = 12
 
 local function Frames(count)
     local frames = {}
@@ -17,10 +18,10 @@ end
 
 return {
     walk = {
-        down = { atlasW = 17 * CELL, atlasH = CELL, frames = Frames(17) },
-        up = { atlasW = 18 * CELL, atlasH = CELL, frames = Frames(18) },
-        left = { atlasW = 16 * CELL, atlasH = CELL, frames = Frames(16) },
-        right = { atlasW = 26 * CELL, atlasH = CELL, frames = Frames(26) },
+        down = { atlasW = WALK_FRAME_COUNT * CELL, atlasH = CELL, frames = Frames(WALK_FRAME_COUNT) },
+        up = { atlasW = WALK_FRAME_COUNT * CELL, atlasH = CELL, frames = Frames(WALK_FRAME_COUNT) },
+        left = { atlasW = WALK_FRAME_COUNT * CELL, atlasH = CELL, frames = Frames(WALK_FRAME_COUNT) },
+        right = { atlasW = WALK_FRAME_COUNT * CELL, atlasH = CELL, frames = Frames(WALK_FRAME_COUNT) },
     },
     idle = {
         down = { atlasW = CELL, atlasH = CELL, frames = Frames(1) },

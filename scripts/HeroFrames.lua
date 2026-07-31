@@ -1,4 +1,4 @@
-return {
+local walk = {
     down = { atlasW = 1024, atlasH = 64, frames = {
         { 0, 0, 37, 57, 15, 8 }, { 37, 0, 37, 57, 15, 8 },
         { 74, 0, 37, 57, 15, 8 }, { 111, 0, 37, 57, 15, 7 },
@@ -46,4 +46,16 @@ return {
         { 870, 0, 42, 55, 6, 8 }, { 912, 0, 38, 55, 7, 8 },
         { 950, 0, 38, 55, 7, 8 }, { 988, 0, 35, 56, 9, 7 },
     } },
+}
+
+local idle = {
+    down = { atlasW = 64, atlasH = 64, frames = { { 0, 0, 64, 64, 0, 0 } } },
+    up = { atlasW = 64, atlasH = 64, frames = { { 0, 0, 64, 64, 0, 0 } } },
+    left = { atlasW = 64, atlasH = 64, frames = { { 0, 0, 64, 64, 0, 0 } } },
+    right = { atlasW = 64, atlasH = 64, frames = { { 0, 0, 64, 64, 0, 0 } } },
+}
+
+return {
+    walk = walk,
+    idle = idle,
 }
