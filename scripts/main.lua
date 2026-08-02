@@ -4,6 +4,7 @@
 local UI = require("urhox-libs/UI")
 local Maps = require("Maps")
 local HeroFrames = require("ChibiHeroFrames")
+local Prologue = require("Prologue")
 
 ---@type NVGContextWrapper|nil
 local vg_ = nil
@@ -48,6 +49,7 @@ local transitionSoundSource_ = nil
 ---@type SoundSource|nil
 local bgmSoundSource_ = nil
 local currentBgmPath_ = nil
+local prologue_ = Prologue.Create()
 local touchMove_ = { up = false, down = false, left = false, right = false }
 local imageHandles_ = {}
 local heroFrameIndex_ = 1
@@ -68,14 +70,65 @@ local dialog_ = {
     visibleChars = 0,
     charTimer = 0.0,
 }
+local dialogCloseLock_ = 0.0
 
 local CARD_DEFINITIONS = {
     {
         id = "gravity_formula",
         name = "F=MG",
-        type = "物理法则",
-        description = "向目标施加重力，使失去支撑的物体向下坠落。",
-        accent = { 87, 211, 190, 255 },
+        type = "基础法则",
+        cost = 1,
+        description = "费用 1。让目标响应当前的重力矢量 g；默认方向为右。",
+        accent = { 255, 202, 48, 255 },
+    },
+    {
+        id = "vector_direction",
+        name = "矢量改向",
+        type = "方向技能",
+        cost = 0,
+        generator = true,
+        description = "拖出后松手即可展开四张方向卡，从中选择一张加入手牌。",
+        accent = { 108, 92, 231, 255 },
+    },
+    {
+        id = "vector_up",
+        name = "向上",
+        type = "方向卡",
+        cost = 2,
+        direction = "up",
+        parameterCard = true,
+        description = "费用 2。将一个兼容的矢量改为向上；拖到发光的矢量变量上生效。",
+        accent = { 108, 92, 231, 255 },
+    },
+    {
+        id = "vector_down",
+        name = "向下",
+        type = "方向卡",
+        cost = 2,
+        direction = "down",
+        parameterCard = true,
+        description = "费用 2。将一个兼容的矢量改为向下；拖到发光的矢量变量上生效。",
+        accent = { 108, 92, 231, 255 },
+    },
+    {
+        id = "vector_left",
+        name = "向左",
+        type = "方向卡",
+        cost = 2,
+        direction = "left",
+        parameterCard = true,
+        description = "费用 2。将一个兼容的矢量改为向左；拖到发光的矢量变量上生效。",
+        accent = { 108, 92, 231, 255 },
+    },
+    {
+        id = "vector_right",
+        name = "向右",
+        type = "方向卡",
+        cost = 2,
+        direction = "right",
+        parameterCard = true,
+        description = "费用 2。将一个兼容的矢量改为向右；拖到发光的矢量变量上生效。",
+        accent = { 108, 92, 231, 255 },
     },
     {
         id = "tower_ink",
@@ -117,8 +170,14 @@ local CARD_DEFINITIONS = {
 local gameState_ = {
     openedChests = {},
     inventory = {},
+    ownedCards = {},
     usedCards = {},
+    stagedCards = {},
+    cardBindings = {},
+    objectCards = {},
     solvedObjects = {},
+    objectActionSpent = {},
+    cardTutorialSeen = false,
 }
 
 local cardDrag_ = {
@@ -130,20 +189,70 @@ local cardDrag_ = {
     y = 0,
 }
 local cardFeedbackTimer_ = 0.0
+local birthdayLetterOpen_ = false
+local cardTutorialOpen_ = false
 local gravityLetter_ = {
     active = true,
     fallen = false,
-    x = 0.70,
+    collectible = false,
+    collected = false,
+    hovered = false,
+    gravityEnabled = false,
+    vectorCardApplied = false,
+    vectorDirection = "right",
+    horizontalTravelSign = 1,
+    x = 0.57,
     y = 0.25,
+    startX = 0.57,
     startY = 0.25,
     targetY = 0.66,
-    velocity = 0.0,
+    velocityX = 0.0,
+    velocityY = 0.0,
+    animationTimer = 0.0,
+    timeScale = 1.0,
+    glowIntensity = 0.0,
+    frozen = false,
+    targetLocked = false,
+    displayScale = 1.0,
+}
+
+local DIRECTION_CARD_ORDER = { "vector_up", "vector_down", "vector_left", "vector_right" }
+
+-- 世界内公式浮层（画在信封上方，g 可作为放置靶区）
+local formulaOverlay_ = {
+    visible = false,
+    gGlow = 0.0,
+    gHovered = false,
+    -- 逻辑坐标下的 g 命中框
+    gx = 0.0, gy = 0.0, gw = 0.0, gh = 0.0,
+}
+
+-- 矢量卡展开的四张方向卡选择层
+-- 所有 UI 操作先排队，下一帧 Update 再执行，避免事件分发中修改祖先控件树
+local directionPicker_ = {
+    open = false,
+    pendingOpen = false,
+    pendingCardId = nil,
+    pendingCancel = false,
+    pendingReset = false,
 }
 
 ---@type Widget|nil
 local locationLabel_ = nil
 ---@type Widget|nil
 local inventoryLabel_ = nil
+---@type Widget|nil
+local questLabel_ = nil
+---@type Widget|nil
+local openingPanel_ = nil
+---@type Widget|nil
+local titleLayer_ = nil
+---@type Widget|nil
+local introLayer_ = nil
+---@type Widget|nil
+local introSpeakerLabel_ = nil
+---@type Widget|nil
+local introLineLabel_ = nil
 ---@type Widget|nil
 local dialogPanel_ = nil
 ---@type Widget|nil
@@ -163,6 +272,14 @@ local firstPersonControls_ = nil
 ---@type Widget|nil
 local firstPersonViewLabel_ = nil
 ---@type Widget|nil
+local firstPersonLeftButton_ = nil
+---@type Widget|nil
+local firstPersonRightButton_ = nil
+---@type Widget|nil
+local firstPersonUpButton_ = nil
+---@type Widget|nil
+local firstPersonDownButton_ = nil
+---@type Widget|nil
 local modeHintLabel_ = nil
 ---@type Widget|nil
 local cardHandPanel_ = nil
@@ -180,6 +297,14 @@ local cardDragGhost_ = nil
 local cardDragNameLabel_ = nil
 ---@type Widget|nil
 local cardDragTypeLabel_ = nil
+---@type Widget|nil
+local directionPickerLayer_ = nil
+---@type Widget|nil
+local cardResetButton_ = nil
+---@type Widget|nil
+local birthdayLetterLayer_ = nil
+---@type Widget|nil
+local cardTutorialLayer_ = nil
 local cardWidgets_ = {}
 local cardRestStyles_ = {}
 local cardHandDirty_ = false
@@ -193,13 +318,27 @@ local collisionEditor_ = {
     cloudSaveTimer = 0.0,
     revision = 0,
     pendingRevision = 0,
+    portalMode = false,
+    portalTargetIndex = 1,
+    selectedCells = {},
+    draggingSelection = false,
+    dragLastX = 0,
+    dragLastY = 0,
+    selectedPortals = {},
+    draggingPortal = false,
+    portalDragLastX = 0,
+    portalDragLastY = 0,
 }
 local collisionSavePayload_ = {
     version = 2,
     subcellsPerTile = FINE_CELLS_PER_TILE,
     maps = {},
+    portals = {},
 }
 local UpdateWorldCamera
+local UpdateWorldScale
+local UpdateInventoryHUD
+local UpdateQuestHUD
 local SetCollisionEditorMessage
 local EnterFirstPersonRoom
 local ExitFirstPersonRoom
@@ -209,6 +348,18 @@ local RebuildCardHand
 local CancelCardDrag
 local ResolveCardDrop
 local SetCardFeedback
+local ShowBirthdayLetter
+local ShowCardTutorial
+local OpenInvitationDialogue
+local GetGravityLetterCardTarget
+local OpenDirectionPicker
+local CloseDirectionPicker
+local PickDirectionCard
+local ApplyDirectionCard
+local ApplyGravityFormula
+local ResetGravityLetterCards
+local UpdateCardResetButton
+local ProcessPendingCardUIActions
 
 local function UpdateResolution()
     local physW = graphics:GetWidth()
@@ -243,6 +394,7 @@ local function PixelForgeTheme()
 end
 
 local function SetTouch(direction, pressed)
+    if not Prologue.IsGameplayReady(prologue_) then return end
     touchMove_[direction] = pressed
 end
 
@@ -265,37 +417,177 @@ local function CreateMoveButton(text, left, bottom, direction)
     }
 end
 
-local function FindCardTarget(view, normalizedX, normalizedY)
-    for _, target in ipairs(view.cardTargets or {}) do
-        if normalizedX >= target.x and normalizedX <= target.x + target.w
-            and normalizedY >= target.y and normalizedY <= target.y + target.h then
-            return target
-        end
-    end
+local function GetGravityLetterHitBounds()
+    local halfW = 0.075
+    local halfH = 0.075
+    local centerX = gravityLetter_.x + 0.0475
+    local centerY = gravityLetter_.y + 0.055
+    return centerX - halfW, centerY - halfH, centerX + halfW, centerY + halfH
+end
 
-    local hotspot = view.hotspot
-    if hotspot ~= nil
-        and normalizedX >= hotspot.x and normalizedX <= hotspot.x + hotspot.w
-        and normalizedY >= hotspot.y and normalizedY <= hotspot.y + hotspot.h then
-        return hotspot
+local function GetPhysicalPointerPosition()
+    local position = input:GetMousePosition()
+    return position.x, position.y
+end
+
+local function PhysicalToUIPointer(x, y)
+    local scale = math.max(0.001, UI.GetScale())
+    return x / scale, y / scale
+end
+
+local function GetLogicalPointerPosition()
+    local physicalX, physicalY = GetPhysicalPointerPosition()
+    return physicalX / dpr_, physicalY / dpr_
+end
+
+local function IsPointerOverGravityLetter()
+    if not firstPerson_.active or firstPerson_.viewId ~= "window" or not gravityLetter_.active then
+        return false
     end
-    return nil
+    local mousePos = input:GetMousePosition()
+    local normalizedX = mousePos.x / math.max(1, graphics:GetWidth())
+    local normalizedY = mousePos.y / math.max(1, graphics:GetHeight())
+    local left, top, right, bottom = GetGravityLetterHitBounds()
+    -- 放大时同步放大命中框，避免视觉与判定不一致
+    local scale = math.max(1.0, gravityLetter_.displayScale or 1.0)
+    local centerX = (left + right) * 0.5
+    local centerY = (top + bottom) * 0.5
+    local halfW = (right - left) * 0.5 * scale
+    local halfH = (bottom - top) * 0.5 * scale
+    return normalizedX >= centerX - halfW and normalizedX <= centerX + halfW
+        and normalizedY >= centerY - halfH and normalizedY <= centerY + halfH
+end
+
+local function UpdateGravityLetterHover()
+    local canHover = firstPerson_.active
+        and not dialog_.open
+        and not cardTutorialOpen_
+        and not birthdayLetterOpen_
+        and not cardDrag_.active
+        and not UI.IsPointerOverUI()
+    gravityLetter_.hovered = canHover and IsPointerOverGravityLetter()
+end
+
+-- 信封在逻辑坐标下的绘制矩形（含悬停/拖拽放大）
+local function GetGravityLetterLogicalRect()
+    local scale = gravityLetter_.displayScale
+    local letterW = logicalW_ * 0.15 * scale
+    local letterH = logicalH_ * 0.15 * scale
+    local letterX = gravityLetter_.x * logicalW_ + logicalW_ * 0.0475 - letterW * 0.5
+    local letterY = gravityLetter_.y * logicalH_ + logicalH_ * 0.055 - letterH * 0.5
+    return letterX, letterY, letterW, letterH
+end
+
+-- 判断某张卡是否能作用于信封（用于拖拽时的高亮判定）
+local function CardCanTargetLetter(card)
+    if card == nil then return false end
+    if not gravityLetter_.active or gravityLetter_.fallen then return false end
+    if not firstPerson_.active or firstPerson_.viewId ~= "window" then return false end
+    if card.generator then return false end
+    if card.parameterCard then
+        -- 方向卡作用于公式里的 g，需要公式已经存在
+        return formulaOverlay_.visible
+    end
+    return card.id == "gravity_formula" and not gravityLetter_.gravityEnabled
+end
+
+-- 拖拽中：指针是否落在信封上
+local function IsDragOverLetter()
+    if not cardDrag_.active then return false end
+    local logicalX, logicalY = GetLogicalPointerPosition()
+    local x, y, w, h = GetGravityLetterLogicalRect()
+    return logicalX >= x and logicalX <= x + w and logicalY >= y and logicalY <= y + h
+end
+
+-- 拖拽中：指针是否落在公式的 g 上
+local function IsDragOverFormulaG()
+    if not cardDrag_.active or not formulaOverlay_.visible then return false end
+    if cardDrag_.card == nil or not cardDrag_.card.parameterCard then return false end
+    local logicalX, logicalY = GetLogicalPointerPosition()
+    return logicalX >= formulaOverlay_.gx
+        and logicalX <= formulaOverlay_.gx + formulaOverlay_.gw
+        and logicalY >= formulaOverlay_.gy
+        and logicalY <= formulaOverlay_.gy + formulaOverlay_.gh
 end
 
 local function UpdateGravityLetter(dt)
-    if not gravityLetter_.active or gravityLetter_.fallen then return end
-    if not gameState_.solvedObjects.gravity_letter then return end
+    if not gravityLetter_.active then return end
 
-    gravityLetter_.velocity = gravityLetter_.velocity + 3.8 * dt
-    gravityLetter_.y = math.min(
-        gravityLetter_.targetY,
-        gravityLetter_.y + gravityLetter_.velocity * dt
-    )
-    if gravityLetter_.y >= gravityLetter_.targetY then
-        gravityLetter_.fallen = true
-        gravityLetter_.velocity = 0.0
-        SetCardFeedback("信件落到了桌面上，可以调查了。", { 98, 220, 139, 255 })
-        print("[Tower2D] Gravity letter landed")
+    local dragCard = cardDrag_.active and cardDrag_.card or nil
+    local canTarget = CardCanTargetLetter(dragCard)
+    local overLetter = canTarget and not dragCard.parameterCard and IsDragOverLetter()
+    local overG = IsDragOverFormulaG()
+
+    -- 拿起任何卡牌时立即冻结位移，但序列帧继续播放
+    gravityLetter_.animationTimer = gravityLetter_.animationTimer + dt
+    gravityLetter_.frozen = cardDrag_.active
+    gravityLetter_.targetLocked = overLetter or overG
+    gravityLetter_.timeScale = cardDrag_.active and 0.0 or 1.0
+
+    -- 高亮发光：可用目标常亮，悬停时更强
+    local targetGlow = 0.0
+    if canTarget and not dragCard.parameterCard then
+        targetGlow = overLetter and 1.0 or 0.65
+    end
+    gravityLetter_.glowIntensity = gravityLetter_.glowIntensity
+        + (targetGlow - gravityLetter_.glowIntensity) * math.min(1.0, dt * 12.0)
+
+    -- 公式中 g 的发光
+    local targetGGlow = 0.0
+    if cardDrag_.active and dragCard ~= nil and dragCard.parameterCard and formulaOverlay_.visible then
+        -- 拿起方向卡后，所有兼容矢量立即高亮；悬停时进一步增强
+        targetGGlow = overG and 1.0 or 0.86
+    end
+    formulaOverlay_.gGlow = formulaOverlay_.gGlow
+        + (targetGGlow - formulaOverlay_.gGlow) * math.min(1.0, dt * 12.0)
+
+    -- 放大：悬停拖拽时变大
+    local targetScale = 1.0
+    if overLetter then
+        targetScale = 1.45
+    elseif canTarget and not dragCard.parameterCard then
+        targetScale = 1.12
+    elseif gravityLetter_.hovered then
+        targetScale = 1.22
+    end
+    gravityLetter_.displayScale = gravityLetter_.displayScale
+        + (targetScale - gravityLetter_.displayScale) * math.min(1.0, dt * 12.0)
+
+    if gravityLetter_.fallen or not gravityLetter_.gravityEnabled then return end
+
+    local scaledDt = dt * gravityLetter_.timeScale
+    if scaledDt <= 0.0 then return end
+
+    local speed = 0.24
+    local direction = gravityLetter_.vectorDirection
+    if direction == "down" then
+        gravityLetter_.velocityY = math.min(0.65, gravityLetter_.velocityY + 1.65 * scaledDt)
+        gravityLetter_.y = math.min(gravityLetter_.targetY, gravityLetter_.y + gravityLetter_.velocityY * scaledDt)
+        if gravityLetter_.y >= gravityLetter_.targetY then
+            gravityLetter_.fallen = true
+            gravityLetter_.collectible = true
+            gravityLetter_.velocityX = 0.0
+            gravityLetter_.velocityY = 0.0
+            UpdateCardResetButton()
+            SetCardFeedback("g 已调整为向下，邀请函落到了窗台上。可先重置，或点击信封收取。", { 98, 220, 139, 255 })
+            print("[Tower2D] Gravity letter landed")
+        end
+        return
+    end
+
+    gravityLetter_.velocityY = 0.0
+    if direction == "right" or direction == "left" then
+        gravityLetter_.x = gravityLetter_.x + speed * gravityLetter_.horizontalTravelSign * scaledDt
+        if gravityLetter_.x >= 0.72 then
+            gravityLetter_.x = 0.72
+            gravityLetter_.horizontalTravelSign = -1
+        elseif gravityLetter_.x <= 0.40 then
+            gravityLetter_.x = 0.40
+            gravityLetter_.horizontalTravelSign = 1
+        end
+    elseif direction == "up" then
+        gravityLetter_.y = gravityLetter_.y - speed * scaledDt
+        if gravityLetter_.y < 0.10 then gravityLetter_.y = 0.42 end
     end
 end
 
@@ -327,7 +619,12 @@ local function SetCardHoverStyle(widget, card)
         zIndex = 220,
     })
     if cardTooltipNameLabel_ ~= nil then
-        cardTooltipNameLabel_:SetText(card.name .. " · " .. card.type)
+        cardTooltipNameLabel_:SetText(string.format(
+            "%s · %s · 费用 %d",
+            card.name,
+            card.type,
+            card.cost or 0
+        ))
         cardTooltipDescriptionLabel_:SetText(card.description)
         cardTooltipPanel_:Show()
     end
@@ -345,21 +642,6 @@ local function UpdateCardDragGhost(x, y)
         left = x - 58,
         top = y - 74,
     })
-end
-
-local function GetPhysicalPointerPosition()
-    local position = input:GetMousePosition()
-    return position.x, position.y
-end
-
-local function PhysicalToUIPointer(x, y)
-    local scale = math.max(0.001, UI.GetScale())
-    return x / scale, y / scale
-end
-
-local function GetLogicalPointerPosition()
-    local physicalX, physicalY = GetPhysicalPointerPosition()
-    return physicalX / dpr_, physicalY / dpr_
 end
 
 local function FineCollisionCellKey(x, y)
@@ -501,10 +783,231 @@ local function SaveCollisionEditorData(saveCloudNow)
     end
 end
 
+local function RestoreDefaultCollision()
+    if currentMap_ == nil or currentMap_.backgroundImage == nil then return end
+    collisionSavePayload_.maps[currentMap_.id] = nil
+    currentMap_ = Maps.Get(currentMap_.id)
+    ApplySavedPortals(currentMap_)
+    UpdateWorldScale()
+    player_.x = math.min(player_.x, currentMap_.width - 0.5)
+    player_.y = math.min(player_.y, currentMap_.height - 0.5)
+    collisionEditor_.selectedCells = {}
+    collisionEditor_.draggingSelection = false
+    if WriteLocalCollisionPayload() then
+        collisionEditor_.revision = collisionEditor_.revision + 1
+        collisionEditor_.dirty = true
+        collisionEditor_.cloudSaveTimer = 0.0
+        SaveCollisionCloudData()
+    end
+    SetCollisionEditorMessage("已恢复当前场景默认碰撞；传送点保持不变")
+    print("[Tower2D] Default collision restored: " .. currentMap_.id)
+end
+
+function EnsurePortalSaveTable(mapId)
+    if collisionSavePayload_.portals == nil then collisionSavePayload_.portals = {} end
+    if collisionSavePayload_.portals[mapId] == nil then collisionSavePayload_.portals[mapId] = {} end
+    return collisionSavePayload_.portals[mapId]
+end
+
+function ApplySavedPortals(map)
+    if map == nil then return end
+    local saved = collisionSavePayload_.portals ~= nil and collisionSavePayload_.portals[map.id] or nil
+    if type(saved) ~= "table" then return end
+    map.portals = {}
+    for key, portal in pairs(saved) do
+        map.portals[key] = portal
+        map.solids[key] = nil
+    end
+end
+
+function SavePortalEditorData()
+    if currentMap_ == nil then return end
+    local saved = EnsurePortalSaveTable(currentMap_.id)
+    for key in pairs(saved) do saved[key] = nil end
+    for key, portal in pairs(currentMap_.portals or {}) do
+        saved[key] = portal
+    end
+    if WriteLocalCollisionPayload() then
+        collisionEditor_.revision = collisionEditor_.revision + 1
+        collisionEditor_.dirty = true
+        collisionEditor_.cloudSaveTimer = 0.8
+        SetCollisionEditorMessage("传送点已保存，正在同步云端…")
+        print("[Tower2D] Portal data saved: " .. currentMap_.id)
+    end
+end
+
+function PortalTargetList()
+    return {
+        { id = "village", name = "小镇外" },
+        { id = "home_lower", name = "家里一楼" },
+        { id = "guild", name = "勇者公会" },
+        { id = "inn", name = "登塔人旅店" },
+        { id = "forge", name = "风轮工坊" },
+        { id = "church", name = "教堂内" },
+        { id = "tower_floor1", name = "塔1层" },
+    }
+end
+
+function GetPortalTarget()
+    local targets = PortalTargetList()
+    local target = targets[collisionEditor_.portalTargetIndex]
+    if target == nil then target = targets[1] end
+    return target
+end
+
+function TogglePortalEditorMode()
+    collisionEditor_.portalMode = not collisionEditor_.portalMode
+    collisionEditor_.selectedPortals = {}
+    collisionEditor_.draggingPortal = false
+    local target = GetPortalTarget()
+    SetCollisionEditorMessage(collisionEditor_.portalMode
+        and ("传送区域编辑：右键选择/新增到 " .. target.name .. "  ·  左键按住拖动  ·  中键删除 · F4切换目标")
+        or "碰撞编辑：左键点击切换细格（传送区域自动跳过）  ·  F4传送区域编辑  ·  F8恢复默认碰撞  ·  F2退出")
+    print("[Tower2D] Portal editor: " .. tostring(collisionEditor_.portalMode) .. " / " .. target.id)
+end
+
+function CyclePortalTarget()
+    local targets = PortalTargetList()
+    collisionEditor_.portalTargetIndex = collisionEditor_.portalTargetIndex % #targets + 1
+    local target = GetPortalTarget()
+    SetCollisionEditorMessage("当前传送目标：" .. target.name .. "  ·  右键设置传送点")
+end
+
+function GetEditorFineCellAtPointer()
+    if UpdateWorldCamera ~= nil then UpdateWorldCamera() end
+    local logicalX, logicalY = GetLogicalPointerPosition()
+    local subcellSize = TILE / FINE_CELLS_PER_TILE
+    local fineX = math.floor((logicalX + cameraX_) / subcellSize) + 1
+    local fineY = math.floor((logicalY + cameraY_) / subcellSize) + 1
+    if fineX < 1 or fineY < 1
+        or fineX > currentMap_.width * FINE_CELLS_PER_TILE
+        or fineY > currentMap_.height * FINE_CELLS_PER_TILE then
+        return nil, nil
+    end
+    return fineX, fineY
+end
+
+function GetEditorTileAtPointer()
+    local fineX, fineY = GetEditorFineCellAtPointer()
+    if fineX == nil then return nil, nil end
+    return math.floor((fineX - 1) / FINE_CELLS_PER_TILE) + 1,
+        math.floor((fineY - 1) / FINE_CELLS_PER_TILE) + 1
+end
+
+function GetConnectedSolidCells(startX, startY)
+    local cells = {}
+    local queue = { { x = startX, y = startY } }
+    local head = 1
+    while queue[head] ~= nil do
+        local cell = queue[head]
+        head = head + 1
+        local key = FineCollisionCellKey(cell.x, cell.y)
+        if not cells[key] and currentMap_.fineSolids[key] then
+            cells[key] = true
+            table.insert(queue, { x = cell.x + 1, y = cell.y })
+            table.insert(queue, { x = cell.x - 1, y = cell.y })
+            table.insert(queue, { x = cell.x, y = cell.y + 1 })
+            table.insert(queue, { x = cell.x, y = cell.y - 1 })
+        end
+    end
+    return cells
+end
+
+function ShiftSelectedCollision(dx, dy)
+    if dx == 0 and dy == 0 then return end
+    EnsureFineCollision(currentMap_)
+    local moved = {}
+    for key in pairs(collisionEditor_.selectedCells) do
+        local yText, xText = key:match("^(%d+):(%d+)$")
+        local x = tonumber(xText)
+        local y = tonumber(yText)
+        if x ~= nil and y ~= nil then
+            local newX = x + dx
+            local newY = y + dy
+            if newX >= 1 and newY >= 1
+                and newX <= currentMap_.width * FINE_CELLS_PER_TILE
+                and newY <= currentMap_.height * FINE_CELLS_PER_TILE then
+                moved[FineCollisionCellKey(newX, newY)] = true
+            end
+        end
+    end
+    for key in pairs(collisionEditor_.selectedCells) do
+        currentMap_.fineSolids[key] = nil
+    end
+    for key in pairs(moved) do
+        currentMap_.fineSolids[key] = true
+    end
+    collisionEditor_.selectedCells = moved
+    SaveCollisionEditorData(false)
+end
+
+function GetPortalCells(startX, startY)
+    local cells = {}
+    local startKey = startY .. ":" .. startX
+    local startPortal = currentMap_.portals[startKey]
+    if startPortal == nil then return cells end
+    local queue = { { x = startX, y = startY } }
+    local head = 1
+    while queue[head] ~= nil do
+        local cell = queue[head]
+        head = head + 1
+        local key = cell.y .. ":" .. cell.x
+        local portal = currentMap_.portals[key]
+        if not cells[key] and portal ~= nil and portal.target == startPortal.target then
+            cells[key] = true
+            table.insert(queue, { x = cell.x + 1, y = cell.y })
+            table.insert(queue, { x = cell.x - 1, y = cell.y })
+            table.insert(queue, { x = cell.x, y = cell.y + 1 })
+            table.insert(queue, { x = cell.x, y = cell.y - 1 })
+        end
+    end
+    return cells
+end
+
+function GetPortalCellAtPointer()
+    local tileX, tileY = GetEditorTileAtPointer()
+    if tileX == nil then return nil, nil end
+    return tileX, tileY
+end
+
+function ShiftSelectedPortals(dx, dy)
+    if dx == 0 and dy == 0 then return end
+    local moved = {}
+    for key in pairs(collisionEditor_.selectedPortals) do
+        local yText, xText = key:match("^(%d+):(%d+)$")
+        local x = tonumber(xText)
+        local y = tonumber(yText)
+        local portal = currentMap_.portals[key]
+        if x ~= nil and y ~= nil and portal ~= nil then
+            local newX = x + dx
+            local newY = y + dy
+            if newX >= 1 and newY >= 1
+                and newX <= currentMap_.width
+                and newY <= currentMap_.height then
+                local newKey = newY .. ":" .. newX
+                local movedPortal = {}
+                for field, value in pairs(portal) do movedPortal[field] = value end
+                moved[newKey] = movedPortal
+            end
+        end
+    end
+    for key in pairs(collisionEditor_.selectedPortals) do
+        currentMap_.portals[key] = nil
+    end
+    collisionEditor_.selectedPortals = {}
+    for key, portal in pairs(moved) do
+        currentMap_.portals[key] = portal
+        currentMap_.solids[key] = nil
+        collisionEditor_.selectedPortals[key] = true
+    end
+    SavePortalEditorData()
+end
+
 local function LoadCollisionEditorData(map)
     if ApplySavedCollision(map) then
         print("[Tower2D] Collision loaded: " .. map.id)
     end
+    ApplySavedPortals(map)
 end
 
 local function LoadCollisionCloudData()
@@ -523,8 +1026,12 @@ local function LoadCollisionCloudData()
                 return
             end
             collisionSavePayload_ = payload
+            if collisionSavePayload_.portals == nil then collisionSavePayload_.portals = {} end
             WriteLocalCollisionPayload()
-            if currentMap_ ~= nil then ApplySavedCollision(currentMap_) end
+            if currentMap_ ~= nil then
+                ApplySavedCollision(currentMap_)
+                ApplySavedPortals(currentMap_)
+            end
             print("[Tower2D] Cloud collision data loaded")
         end,
         error = function(code, reason)
@@ -541,7 +1048,6 @@ local function IsCollisionEditorMap()
         and not dialog_.open
         and not floorTransition_.active
         and currentMap_ ~= nil
-        and currentMap_.id ~= "village"
         and currentMap_.backgroundImage ~= nil
 end
 
@@ -554,6 +1060,11 @@ end
 local function ToggleCollisionEditor()
     if collisionEditor_.active then
         collisionEditor_.active = false
+        collisionEditor_.portalMode = false
+        collisionEditor_.selectedCells = {}
+        collisionEditor_.selectedPortals = {}
+        collisionEditor_.draggingSelection = false
+        collisionEditor_.draggingPortal = false
         SetCollisionEditorMessage("方向键 / WASD 移动  ·  E / 空格 调查")
         print("[Tower2D] Collision editor: off")
         return
@@ -565,62 +1076,134 @@ local function ToggleCollisionEditor()
     end
     EnsureFineCollision(currentMap_)
     collisionEditor_.active = true
-    SetCollisionEditorMessage("碰撞编辑：4×4 细网格  ·  左键切换并自动保存  ·  F5立即云存  ·  F2退出")
+    collisionEditor_.portalMode = false
+    collisionEditor_.selectedCells = {}
+    collisionEditor_.selectedPortals = {}
+    collisionEditor_.draggingSelection = false
+    collisionEditor_.draggingPortal = false
+    SetCollisionEditorMessage("碰撞编辑：左键点击切换细格（传送区域自动跳过）  ·  F4传送区域编辑  ·  F8恢复默认碰撞  ·  F2退出")
     print("[Tower2D] Collision editor: on / " .. currentMap_.id)
 end
 
 local function RestoreSavedCollision()
     if currentMap_ == nil or currentMap_.backgroundImage == nil then return end
     LoadCollisionEditorData(currentMap_)
-    SetCollisionEditorMessage("已读取保存碰撞：左键切换格子")
+    if collisionEditor_.portalMode then
+        SetCollisionEditorMessage("传送区域已读取：右键选择  ·  左键拖动  ·  右键空白新增  ·  中键删除  ·  F4切换目标")
+    else
+        SetCollisionEditorMessage("已读取保存碰撞：左键切换格子")
+    end
 end
 
 local function HandleCollisionEditorPointer()
     if not collisionEditor_.active or not IsCollisionEditorMap() then return end
-    if not input:GetMouseButtonPress(MOUSEB_LEFT) or UI.IsPointerOverUI() then return end
-
-    EnsureFineCollision(currentMap_)
-    if UpdateWorldCamera ~= nil then UpdateWorldCamera() end
-    local logicalX, logicalY = GetLogicalPointerPosition()
-    local subcellSize = TILE / FINE_CELLS_PER_TILE
-    local fineX = math.floor((logicalX + cameraX_) / subcellSize) + 1
-    local fineY = math.floor((logicalY + cameraY_) / subcellSize) + 1
-    if fineX < 1 or fineY < 1
-        or fineX > currentMap_.width * FINE_CELLS_PER_TILE
-        or fineY > currentMap_.height * FINE_CELLS_PER_TILE then
+    if collisionEditor_.portalMode then
+        if input:GetKeyPress(KEY_F4) then
+            CyclePortalTarget()
+            return
+        end
+        local tileX, tileY = GetPortalCellAtPointer()
+        if tileX == nil then return end
+        local key = tileY .. ":" .. tileX
+        if input:GetMouseButtonPress(MOUSEB_RIGHT) then
+            if currentMap_.portals[key] ~= nil then
+                collisionEditor_.selectedPortals = GetPortalCells(tileX, tileY)
+                collisionEditor_.draggingPortal = false
+                SetCollisionEditorMessage("已选中传送区域：左键按住细调拖动，右键可重新选择，中键删除")
+            else
+                local target = GetPortalTarget()
+                currentMap_.portals[key] = {
+                    target = target.id,
+                    x = target.id == "village" and 9 or 7,
+                    y = target.id == "tower_floor1" and 11 or 9,
+                }
+                currentMap_.solids[key] = nil
+                collisionEditor_.selectedPortals = { [key] = true }
+                SavePortalEditorData()
+                SetCollisionEditorMessage("已新增传送区域：" .. key .. " → " .. target.name)
+            end
+            return
+        end
+        if input:GetMouseButtonPress(MOUSEB_MIDDLE) then
+            if currentMap_.portals[key] ~= nil then
+                currentMap_.portals[key] = nil
+                collisionEditor_.selectedPortals[key] = nil
+                SavePortalEditorData()
+                SetCollisionEditorMessage("已删除传送区域：" .. key)
+            end
+            return
+        end
+        if input:GetMouseButtonPress(MOUSEB_LEFT) then
+            if next(collisionEditor_.selectedPortals) == nil then return end
+            collisionEditor_.draggingPortal = true
+            collisionEditor_.portalDragLastX = tileX
+            collisionEditor_.portalDragLastY = tileY
+            return
+        end
+        if input:GetMouseButtonDown(MOUSEB_LEFT) and collisionEditor_.draggingPortal then
+            local dx = tileX - collisionEditor_.portalDragLastX
+            local dy = tileY - collisionEditor_.portalDragLastY
+            if dx ~= 0 or dy ~= 0 then
+                ShiftSelectedPortals(dx, dy)
+                collisionEditor_.portalDragLastX = tileX
+                collisionEditor_.portalDragLastY = tileY
+            end
+            return
+        end
+        if input:GetMouseButtonRelease(MOUSEB_LEFT) then
+            collisionEditor_.draggingPortal = false
+        end
         return
     end
-
-    local key = FineCollisionCellKey(fineX, fineY)
-    if currentMap_.fineSolids[key] then
-        currentMap_.fineSolids[key] = nil
-    else
-        currentMap_.fineSolids[key] = true
+    EnsureFineCollision(currentMap_)
+    if input:GetMouseButtonPress(MOUSEB_LEFT) then
+        local fineX, fineY = GetEditorFineCellAtPointer()
+        if fineX == nil then return end
+        local tileX = math.floor((fineX - 1) / FINE_CELLS_PER_TILE) + 1
+        local tileY = math.floor((fineY - 1) / FINE_CELLS_PER_TILE) + 1
+        if Maps.GetPortal(currentMap_, tileX, tileY) ~= nil then
+            SetCollisionEditorMessage("传送区域不可修改碰撞，请切换到 F4 传送区域编辑")
+            return
+        end
+        local key = FineCollisionCellKey(fineX, fineY)
+        if currentMap_.fineSolids[key] then
+            currentMap_.fineSolids[key] = nil
+        else
+            currentMap_.fineSolids[key] = true
+        end
+        SaveCollisionEditorData(false)
+        SetCollisionEditorMessage(string.format(
+            "已切换碰撞细格(%d,%d)，传送区域保持不变",
+            tileX,
+            tileY
+        ))
+        print(string.format(
+            "[Tower2D] Fine collision toggle: %s (%d,%d)",
+            currentMap_.fineSolids[key] and "solid" or "walkable",
+            fineX,
+            fineY
+        ))
+        return
     end
-    local tileX = math.floor((fineX - 1) / FINE_CELLS_PER_TILE) + 1
-    local tileY = math.floor((fineY - 1) / FINE_CELLS_PER_TILE) + 1
-    local localX = (fineX - 1) % FINE_CELLS_PER_TILE + 1
-    local localY = (fineY - 1) % FINE_CELLS_PER_TILE + 1
-    SaveCollisionEditorData(false)
-    SetCollisionEditorMessage(string.format(
-        "已切换地图格(%d,%d) 子格(%d,%d)，正在自动保存…",
-        tileX,
-        tileY,
-        localX,
-        localY
-    ))
-    print(string.format(
-        "[Tower2D] Fine collision toggle: %s (%d,%d)",
-        currentMap_.fineSolids[key] and "solid" or "walkable",
-        fineX,
-        fineY
-    ))
 end
 
 local function DrawCollisionEditorOverlay()
     if not collisionEditor_.active or not IsCollisionEditorMap() then return end
 
-    EnsureFineCollision(currentMap_)
+    if collisionEditor_.portalMode then
+        for key, portal in pairs(currentMap_.portals or {}) do
+            local tileYText, tileXText = key:match("^(%d+):(%d+)$")
+            local tileX = tonumber(tileXText)
+            local tileY = tonumber(tileYText)
+            if tileX ~= nil and tileY ~= nil then
+                local sx, sy = TileToScreen(tileX, tileY)
+                local selected = collisionEditor_.selectedPortals[key] == true
+                FillRect(sx + 4, sy + 4, TILE - 8, TILE - 8, selected and { 255, 239, 112, 175 } or { 255, 210, 72, 96 })
+                StrokeRect(sx + 2, sy + 2, TILE - 4, TILE - 4, selected and { 255, 255, 190, 255 } or { 255, 239, 148, 230 }, selected and 3 or 2)
+            end
+        end
+        return
+    end
     local subcellSize = TILE / FINE_CELLS_PER_TILE
     local fineWidth = currentMap_.width * FINE_CELLS_PER_TILE
     local fineHeight = currentMap_.height * FINE_CELLS_PER_TILE
@@ -630,20 +1213,23 @@ local function DrawCollisionEditorOverlay()
             local sy = (fineY - 1) * subcellSize - cameraY_
             local key = FineCollisionCellKey(fineX, fineY)
             local solid = currentMap_.fineSolids[key] == true
+            local selected = collisionEditor_.selectedCells[key] == true
             FillRect(
                 sx + 1,
                 sy + 1,
                 subcellSize - 2,
                 subcellSize - 2,
-                solid and { 214, 74, 74, 76 } or { 56, 205, 132, 18 }
+                selected and { 255, 214, 76, 175 }
+                    or (solid and { 214, 74, 74, 76 } or { 56, 205, 132, 18 })
             )
             StrokeRect(
                 sx,
                 sy,
                 subcellSize,
                 subcellSize,
-                solid and { 255, 111, 111, 165 } or { 117, 241, 169, 58 },
-                1
+                selected and { 255, 248, 154, 255 }
+                    or (solid and { 255, 111, 111, 165 } or { 117, 241, 169, 58 }),
+                selected and 2 or 1
             )
         end
     end
@@ -662,8 +1248,17 @@ local function UpdateCollisionEditorInput()
         return
     end
     if not collisionEditor_.active then return end
+    if input:GetKeyPress(KEY_F8) then
+        RestoreDefaultCollision()
+        return
+    end
+    if input:GetKeyPress(KEY_F4) and not collisionEditor_.portalMode then
+        TogglePortalEditorMode()
+        return
+    end
     if input:GetKeyPress(KEY_F5) then
         SaveCollisionEditorData(true)
+        if collisionEditor_.portalMode then SavePortalEditorData() end
     elseif input:GetKeyPress(KEY_F9) then
         RestoreSavedCollision()
     end
@@ -679,9 +1274,12 @@ local function BeginCardDrag(card, widget, physicalX, physicalY)
     cardDrag_.pointerId = 0
     cardDrag_.x = physicalX
     cardDrag_.y = physicalY
+    gravityLetter_.frozen = true
+    gravityLetter_.timeScale = 0.0
+    gravityLetter_.targetLocked = false
     widget:SetStyle({ opacity = 0.24, scale = 1.0, rotate = 0, translateY = 0, zIndex = 300 })
     cardDragNameLabel_:SetText(card.name)
-    cardDragTypeLabel_:SetText(card.type)
+    cardDragTypeLabel_:SetText(string.format("%s · 费用 %d", card.type, card.cost or 0))
     cardDragGhost_:SetStyle({ borderColor = card.accent })
     UpdateCardDragGhost(uiX, uiY)
     cardDragGhost_:Show()
@@ -711,6 +1309,7 @@ local function FindCardAtPointer(x, y)
 end
 
 local function UpdateCardPointer()
+    if birthdayLetterOpen_ or cardTutorialOpen_ then return end
     if not firstPerson_.active then return end
     local physicalX, physicalY = GetPhysicalPointerPosition()
     local uiX, uiY = PhysicalToUIPointer(physicalX, physicalY)
@@ -747,80 +1346,362 @@ CancelCardDrag = function()
     cardDrag_.card = nil
     cardDrag_.sourceWidget = nil
     cardDrag_.pointerId = nil
+    gravityLetter_.frozen = false
+    gravityLetter_.timeScale = 1.0
+    gravityLetter_.targetLocked = false
     if cardDragGhost_ ~= nil then cardDragGhost_:Hide() end
 end
 
+local function GetCardDefinition(cardId)
+    for _, card in ipairs(CARD_DEFINITIONS) do
+        if card.id == cardId then return card end
+    end
+    return nil
+end
+
+local function CardIsAccepted(target, cardId)
+    if target.acceptedCard == cardId then return true end
+    for _, acceptedId in ipairs(target.acceptedCards or {}) do
+        if acceptedId == cardId then return true end
+    end
+    return false
+end
+
+local function GetObjectCardCost(objectId, includeStaged)
+    local cost = 0
+    for _, cardId in ipairs(gameState_.objectCards[objectId] or {}) do
+        local card = GetCardDefinition(cardId)
+        if card ~= nil then cost = cost + (card.cost or 0) end
+    end
+    if includeStaged then
+        for cardId, stagedObjectId in pairs(gameState_.stagedCards) do
+            if stagedObjectId == objectId then
+                local card = GetCardDefinition(cardId)
+                if card ~= nil then cost = cost + (card.cost or 0) end
+            end
+        end
+    end
+    return cost
+end
+
+-- 取得信封对应的 cardTarget 数据（行动值、可接受卡牌等）
+GetGravityLetterCardTarget = function()
+    if firstPerson_.room == nil then return nil end
+    local view = firstPerson_.room.views[firstPerson_.viewId]
+    if view == nil then return nil end
+    for _, target in ipairs(view.cardTargets or {}) do
+        if target.objectId == "gravity_letter" then return target end
+    end
+    return nil
+end
+
+-- 仅在卡牌流程已经开始时显示明确的重置入口
+UpdateCardResetButton = function()
+    if cardResetButton_ == nil then return end
+
+    local hasDirectionCard = false
+    for _, cardId in ipairs(DIRECTION_CARD_ORDER) do
+        if gameState_.ownedCards[cardId] then
+            hasDirectionCard = true
+            break
+        end
+    end
+    local hasCardOperation = directionPicker_.open
+        or gameState_.objectCards.gravity_letter ~= nil
+        or gameState_.usedCards.vector_direction
+        or hasDirectionCard
+        or gravityLetter_.gravityEnabled
+        or gravityLetter_.vectorCardApplied
+
+    cardResetButton_:SetVisible(
+        firstPerson_.active
+            and firstPerson_.viewId == "window"
+            and not gravityLetter_.collected
+            and not prologue_.invitationCollected
+            and hasCardOperation
+    )
+end
+
+-- 关闭方向卡选择层
+CloseDirectionPicker = function()
+    directionPicker_.pendingOpen = false
+    directionPicker_.pendingCardId = nil
+    directionPicker_.pendingCancel = false
+    directionPicker_.open = false
+    if directionPickerLayer_ ~= nil then directionPickerLayer_:Hide() end
+    UpdateCardResetButton()
+end
+
+-- 打开方向卡选择层：四张方向卡供玩家挑一张进手牌
+OpenDirectionPicker = function()
+    if directionPickerLayer_ == nil then return end
+    directionPicker_.open = true
+    directionPickerLayer_:Show()
+    UpdateCardResetButton()
+    SetCardFeedback("选择一个方向加入手牌（2 费）。点击空白处取消。", { 177, 158, 255, 255 })
+    print("[Tower2D] Direction picker opened")
+end
+
+-- 玩家挑选了某个方向 → 该方向卡入手牌，矢量改向卡消耗掉
+PickDirectionCard = function(cardId)
+    local card = GetCardDefinition(cardId)
+    if card == nil then return end
+    CloseDirectionPicker()
+    gameState_.ownedCards[cardId] = true
+    gameState_.usedCards[cardId] = nil
+    -- 矢量改向是生成器，用掉后从手牌移除
+    gameState_.usedCards.vector_direction = true
+    cardHandDirty_ = true
+    UpdateCardResetButton()
+    SetCardFeedback(card.name .. "方向卡已加入手牌，请拖到一个发光的矢量上。", { 98, 220, 139, 255 })
+    print("[Tower2D] Direction card picked: " .. cardId)
+end
+
+ProcessPendingCardUIActions = function()
+    if directionPicker_.pendingReset then
+        directionPicker_.pendingReset = false
+        directionPicker_.pendingOpen = false
+        directionPicker_.pendingCardId = nil
+        directionPicker_.pendingCancel = false
+        ResetGravityLetterCards(false)
+        return
+    end
+
+    if directionPicker_.pendingCardId ~= nil then
+        local cardId = directionPicker_.pendingCardId
+        directionPicker_.pendingCardId = nil
+        directionPicker_.pendingCancel = false
+        PickDirectionCard(cardId)
+        return
+    end
+
+    if directionPicker_.pendingCancel then
+        directionPicker_.pendingCancel = false
+        CloseDirectionPicker()
+        SetCardFeedback("已取消方向选择。", { 245, 205, 96, 255 })
+        return
+    end
+
+    if directionPicker_.pendingOpen then
+        directionPicker_.pendingOpen = false
+        OpenDirectionPicker()
+    end
+end
+
+-- 应用重力方向（由方向卡拖到 g 上触发）
+ApplyDirectionCard = function(card)
+    local direction = card.direction
+    if direction == nil then return end
+    local target = GetGravityLetterCardTarget()
+    if target == nil then return end
+
+    local actionValue = target.actionValue or 0
+    local spent = GetObjectCardCost("gravity_letter", true)
+    local cost = card.cost or 0
+    if spent + cost > actionValue then
+        SetCardFeedback(
+            string.format("行动点不足：%d + %d > %d。", spent, cost, actionValue),
+            { 232, 112, 96, 255 }
+        )
+        return
+    end
+
+    local applied = gameState_.objectCards.gravity_letter or {}
+    gameState_.objectCards.gravity_letter = applied
+    table.insert(applied, card.id)
+    gameState_.usedCards[card.id] = true
+    gameState_.objectActionSpent.gravity_letter = GetObjectCardCost("gravity_letter", false)
+
+    gravityLetter_.vectorDirection = direction
+    gravityLetter_.vectorCardApplied = true
+    if direction == "right" then gravityLetter_.horizontalTravelSign = 1 end
+    if direction == "left" then gravityLetter_.horizontalTravelSign = -1 end
+    gravityLetter_.velocityX = 0.0
+    gravityLetter_.velocityY = direction == "down" and 0.06 or 0.0
+
+    gameState_.solvedObjects.gravity_letter =
+        gameState_.objectActionSpent.gravity_letter >= actionValue
+    cardHandDirty_ = true
+    UpdateCardResetButton()
+
+    local directionName = ({ up = "上", down = "下", left = "左", right = "右" })[direction]
+    SetCardFeedback("g 已改为向" .. directionName .. "。", { 98, 220, 139, 255 })
+    print("[Tower2D] Direction applied: " .. direction)
+end
+
+-- 应用 F=MG（拖到信封上触发）
+ApplyGravityFormula = function(card)
+    local target = GetGravityLetterCardTarget()
+    if target == nil then return end
+
+    local actionValue = target.actionValue or 0
+    local spent = GetObjectCardCost("gravity_letter", true)
+    local cost = card.cost or 0
+    if spent + cost > actionValue then
+        SetCardFeedback(
+            string.format("行动点不足：%d + %d > %d。", spent, cost, actionValue),
+            { 232, 112, 96, 255 }
+        )
+        return
+    end
+    if not CardIsAccepted(target, card.id) then
+        SetCardFeedback(card.name .. "无法作用于这个物体。", { 232, 112, 96, 255 })
+        return
+    end
+
+    local applied = gameState_.objectCards.gravity_letter or {}
+    gameState_.objectCards.gravity_letter = applied
+    table.insert(applied, card.id)
+    gameState_.usedCards[card.id] = true
+    gameState_.objectActionSpent.gravity_letter = GetObjectCardCost("gravity_letter", false)
+
+    gravityLetter_.gravityEnabled = true
+    formulaOverlay_.visible = true
+    cardHandDirty_ = true
+    UpdateCardResetButton()
+
+    SetCardFeedback("F = m·g 已刻在信封上。拖动方向卡时，可改变的矢量会发光。", { 98, 220, 139, 255 })
+    print("[Tower2D] Gravity formula applied")
+end
+
+-- 撤销/重置：卡牌返还手牌，信封恢复初始运动状态
+ResetGravityLetterCards = function(silent)
+    if gravityLetter_.collected or prologue_.invitationCollected then
+        if not silent then
+            SetCardFeedback("邀请函已经收取，效果不能再重置。", { 245, 205, 96, 255 })
+        end
+        return
+    end
+
+    local hasDirectionCard = false
+    for _, cardId in ipairs(DIRECTION_CARD_ORDER) do
+        if gameState_.ownedCards[cardId] then
+            hasDirectionCard = true
+            break
+        end
+    end
+    local hadAnything = directionPicker_.open
+        or (gameState_.objectCards.gravity_letter ~= nil)
+        or gravityLetter_.gravityEnabled
+        or gameState_.usedCards.vector_direction
+        or hasDirectionCard
+
+    CloseDirectionPicker()
+
+    for _, cardId in ipairs(gameState_.objectCards.gravity_letter or {}) do
+        gameState_.usedCards[cardId] = nil
+        gameState_.cardBindings[cardId] = nil
+    end
+    for cardId, stagedObjectId in pairs(gameState_.stagedCards) do
+        if stagedObjectId == "gravity_letter" then
+            gameState_.stagedCards[cardId] = nil
+            gameState_.cardBindings[cardId] = nil
+        end
+    end
+    gameState_.objectCards.gravity_letter = nil
+    gameState_.objectActionSpent.gravity_letter = nil
+    gameState_.solvedObjects.gravity_letter = nil
+
+    -- 方向卡由矢量改向生成；重置时收回方向卡并返还生成器
+    for _, cardId in ipairs(DIRECTION_CARD_ORDER) do
+        gameState_.ownedCards[cardId] = nil
+        gameState_.usedCards[cardId] = nil
+    end
+    if hasDirectionCard or gameState_.usedCards.vector_direction then
+        gameState_.usedCards.vector_direction = nil
+        gameState_.ownedCards.vector_direction = true
+    end
+
+    gravityLetter_.active = true
+    gravityLetter_.fallen = false
+    gravityLetter_.collectible = false
+    gravityLetter_.gravityEnabled = false
+    gravityLetter_.vectorCardApplied = false
+    gravityLetter_.vectorDirection = "right"
+    gravityLetter_.horizontalTravelSign = 1
+    gravityLetter_.x = gravityLetter_.startX
+    gravityLetter_.y = gravityLetter_.startY
+    gravityLetter_.velocityX = 0.0
+    gravityLetter_.velocityY = 0.0
+    gravityLetter_.timeScale = 1.0
+    gravityLetter_.frozen = false
+    gravityLetter_.targetLocked = false
+    formulaOverlay_.visible = false
+    formulaOverlay_.gGlow = 0.0
+
+    cardHandDirty_ = true
+    UpdateCardResetButton()
+    if not silent and hadAnything then
+        SetCardFeedback("已重置：卡牌返还，信封恢复初始运动。", { 255, 217, 61, 255 })
+    end
+    print("[Tower2D] Gravity letter cards reset")
+end
+
 ResolveCardDrop = function(card, physicalX, physicalY)
+    if card == nil then return end
     if not firstPerson_.active or firstPerson_.room == nil then
         SetCardFeedback("卡牌只能在谜室中使用。", { 232, 112, 96, 255 })
         return
     end
+    if not gameState_.ownedCards[card.id] then
+        SetCardFeedback("你还没有获得这张卡牌。", { 232, 112, 96, 255 })
+        return
+    end
 
-    local view = firstPerson_.room.views[firstPerson_.viewId]
-    local physicalW = math.max(1, graphics:GetWidth())
-    local physicalH = math.max(1, graphics:GetHeight())
-    local normalizedX = physicalX / physicalW
-    local normalizedY = physicalY / physicalH
-    local hotspot = FindCardTarget(view, normalizedX, normalizedY)
+    -- 矢量改向：脱手释放后，下一帧展开四张方向卡
+    if card.generator then
+        directionPicker_.pendingOpen = true
+        return
+    end
 
-    if card.id == "gravity_formula" and firstPerson_.viewId == "window"
-        and not gameState_.solvedObjects.gravity_letter then
-        local letterCenterX = gravityLetter_.x + 0.0475
-        local letterCenterY = gravityLetter_.y + 0.055
-        local dx = normalizedX - letterCenterX
-        local dy = normalizedY - letterCenterY
-        if dx * dx + dy * dy <= 0.15 * 0.15 then
-            for _, target in ipairs(view.cardTargets or {}) do
-                if target.objectId == "gravity_letter" then
-                    hotspot = target
-                    break
-                end
-            end
+    local logicalX = physicalX / dpr_
+    local logicalY = physicalY / dpr_
+
+    -- 方向卡：必须落在公式的 g 上
+    if card.parameterCard then
+        if not formulaOverlay_.visible then
+            SetCardFeedback("当前场景里还没有可修改的矢量。", { 232, 112, 96, 255 })
+            return
         end
-    end
-
-    print(string.format(
-        "[Tower2D] Card drop: %s physical %.1f, %.1f normalized %.3f, %.3f target=%s",
-        card.id,
-        physicalX,
-        physicalY,
-        normalizedX,
-        normalizedY,
-        hotspot and tostring(hotspot.objectId) or "none"
-    ))
-
-    local overHotspot = hotspot ~= nil
-
-    if not overHotspot then
-        SetCardFeedback("卡牌没有接触到可作用的物品。", { 232, 112, 96, 255 })
-        print("[Tower2D] Card missed hotspot: " .. card.id)
+        local onG = logicalX >= formulaOverlay_.gx
+            and logicalX <= formulaOverlay_.gx + formulaOverlay_.gw
+            and logicalY >= formulaOverlay_.gy
+            and logicalY <= formulaOverlay_.gy + formulaOverlay_.gh
+        if not onG then
+            SetCardFeedback("请放到发光的矢量上。", { 232, 112, 96, 255 })
+            return
+        end
+        if gameState_.usedCards[card.id] then
+            SetCardFeedback("这张方向卡已经用过了。", { 232, 112, 96, 255 })
+            return
+        end
+        ApplyDirectionCard(card)
         return
     end
 
-    if hotspot.objectId ~= nil and gameState_.solvedObjects[hotspot.objectId] then
-        SetCardFeedback("这个机关已经被解开了。", { 245, 205, 96, 255 })
+    -- 基础法则卡：必须落在信封上
+    local lx, ly, lw, lh = GetGravityLetterLogicalRect()
+    local onLetter = gravityLetter_.active
+        and logicalX >= lx and logicalX <= lx + lw
+        and logicalY >= ly and logicalY <= ly + lh
+    if not onLetter then
+        SetCardFeedback("把卡牌拖到发光的交互物上。", { 232, 112, 96, 255 })
+        return
+    end
+    if gameState_.usedCards[card.id] then
+        SetCardFeedback("这张卡牌已经使用过了。", { 232, 112, 96, 255 })
+        return
+    end
+    if card.id == "gravity_formula" then
+        if gravityLetter_.gravityEnabled then
+            SetCardFeedback("信封已经在响应 g 了。", { 245, 205, 96, 255 })
+            return
+        end
+        ApplyGravityFormula(card)
         return
     end
 
-    if hotspot.acceptedCard ~= card.id then
-        SetCardFeedback(card.name .. "没有产生反应。", { 232, 112, 96, 255 })
-        print("[Tower2D] Card rejected: " .. card.id .. " -> " .. tostring(hotspot.objectId))
-        return
-    end
-
-    gameState_.usedCards[card.id] = true
-    gameState_.solvedObjects[hotspot.objectId] = true
-    if hotspot.objectId == "gravity_letter" then
-        gravityLetter_.velocity = 0.12
-    end
-    cardHandDirty_ = true
-    SetCardFeedback(card.name .. "生效了！", { 98, 220, 139, 255 })
-    OpenDialogue({
-        hidePortrait = true,
-        name = hotspot.effectName or view.name,
-        lines = hotspot.effectLines or { "机关产生了变化。" },
-    })
-    print("[Tower2D] Card solved: " .. card.id .. " -> " .. hotspot.objectId)
+    SetCardFeedback(card.name .. "无法作用于这个物体。", { 232, 112, 96, 255 })
 end
 
 local CARD_WIDTH = 124
@@ -910,6 +1791,13 @@ local function CreateCardWidget(card, restStyle)
                 },
             },
             UI.Label {
+                text = "费用 " .. tostring(card.cost or 0),
+                fontSize = 8,
+                fontWeight = "bold",
+                fontColor = { 255, 217, 61, 255 },
+                pointerEvents = "none",
+            },
+            UI.Label {
                 text = card.name,
                 fontSize = 11,
                 fontWeight = "bold",
@@ -993,7 +1881,9 @@ RebuildCardHand = function()
     cardRestStyles_ = {}
     local visibleCards = {}
     for _, card in ipairs(CARD_DEFINITIONS) do
-        if not gameState_.usedCards[card.id] then
+        if gameState_.ownedCards[card.id]
+            and not gameState_.usedCards[card.id]
+            and gameState_.stagedCards[card.id] == nil then
             table.insert(visibleCards, card)
         end
     end
@@ -1046,6 +1936,15 @@ local function BuildUI()
         text = "方向键 / WASD 移动  ·  E / 空格 调查",
         fontSize = 9,
         fontColor = { 200, 200, 220, 255 },
+    }
+
+    questLabel_ = UI.Label {
+        text = Prologue.GetQuestText(prologue_),
+        fontSize = 11,
+        fontWeight = "bold",
+        lineHeight = 1.45,
+        whiteSpace = "normal",
+        fontColor = { 255, 217, 61, 255 },
     }
 
     portraitPanel_ = UI.Panel {
@@ -1122,6 +2021,102 @@ local function BuildUI()
         zIndex = 1000,
         pointerEvents = "auto",
         visible = false,
+    }
+
+    titleLayer_ = UI.Panel {
+        position = "absolute",
+        left = 0,
+        right = 0,
+        top = 0,
+        bottom = 0,
+        backgroundImage = "image/edited_牛顿牌正式开场封面_20260801070431.png",
+        backgroundFit = "cover",
+        pointerEvents = "none",
+    }
+
+    introSpeakerLabel_ = UI.Label {
+        text = "",
+        fontSize = 14,
+        fontWeight = "bold",
+        fontColor = { 33, 189, 174, 255 },
+    }
+
+    introLineLabel_ = UI.Label {
+        text = "",
+        marginTop = 10,
+        fontSize = 12,
+        lineHeight = 1.55,
+        whiteSpace = "normal",
+        flexShrink = 1,
+        fontColor = { 240, 240, 240, 255 },
+    }
+
+    introLayer_ = UI.Panel {
+        position = "absolute",
+        left = 0,
+        right = 0,
+        top = 0,
+        bottom = 0,
+        backgroundColor = { 0, 0, 0, 255 },
+        pointerEvents = "none",
+        visible = false,
+        children = {
+            UI.Panel {
+                position = "absolute",
+                left = "8%",
+                right = "8%",
+                bottom = 28,
+                minHeight = 152,
+                padding = 14,
+                flexDirection = "row",
+                gap = 16,
+                backgroundColor = { 15, 15, 35, 245 },
+                borderWidth = 4,
+                borderColor = { 240, 240, 240, 255 },
+                pointerEvents = "none",
+                children = {
+                    UI.Panel {
+                        width = 108,
+                        height = 108,
+                        flexShrink = 0,
+                        backgroundColor = { 15, 15, 35, 255 },
+                        backgroundImage = "image/母亲塞拉像素头像_20260727072703.png",
+                        backgroundFit = "contain",
+                        borderWidth = 3,
+                        borderColor = { 108, 92, 231, 255 },
+                        pointerEvents = "none",
+                    },
+                    UI.Panel {
+                        flexGrow = 1,
+                        flexShrink = 1,
+                        paddingTop = 3,
+                        children = {
+                            introSpeakerLabel_,
+                            introLineLabel_,
+                            UI.Label {
+                                text = "▼",
+                                position = "absolute",
+                                right = 16,
+                                bottom = 10,
+                                fontSize = 11,
+                                fontColor = { 255, 217, 61, 255 },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    openingPanel_ = UI.Panel {
+        position = "absolute",
+        left = 0,
+        right = 0,
+        top = 0,
+        bottom = 0,
+        zIndex = 2000,
+        pointerEvents = "auto",
+        children = { titleLayer_, introLayer_ },
     }
 
     overworldControls_ = UI.Panel {
@@ -1273,6 +2268,211 @@ local function BuildUI()
         },
     }
 
+    -- 方向卡选择层：矢量改向脱手后展开四张方向卡
+    local function CreateDirectionPickCard(cardId)
+        local card = GetCardDefinition(cardId)
+        local glyph = ({ up = "↑", down = "↓", left = "←", right = "→" })[card.direction]
+        local label = ({ up = "上", down = "下", left = "左", right = "右" })[card.direction]
+        return UI.Card {
+            width = 124,
+            height = 158,
+            padding = 9,
+            gap = 6,
+            alignItems = "center",
+            justifyContent = "center",
+            backgroundColor = { 24, 31, 61, 252 },
+            borderWidth = 3,
+            borderColor = card.accent,
+            boxShadow = { { x = 5, y = 7, blur = 0, color = { 0, 0, 0, 125 } } },
+            transition = "scale 0.12 ease-out, translateY 0.12 ease-out",
+            pointerEvents = "auto",
+            clickable = true,
+            hoverable = true,
+            onPointerEnter = function(event, widget)
+                widget:SetStyle({ scale = 1.12, translateY = -14 })
+            end,
+            onPointerLeave = function(event, widget)
+                widget:SetStyle({ scale = 1.0, translateY = 0 })
+            end,
+            onClick = function()
+                directionPicker_.pendingCardId = cardId
+            end,
+            children = {
+                UI.Label {
+                    text = "矢量方向",
+                    fontSize = 8,
+                    fontWeight = "bold",
+                    fontColor = card.accent,
+                    pointerEvents = "none",
+                },
+                UI.Panel {
+                    width = 62,
+                    height = 62,
+                    alignItems = "center",
+                    justifyContent = "center",
+                    backgroundColor = { card.accent[1], card.accent[2], card.accent[3], 46 },
+                    borderWidth = 2,
+                    borderColor = card.accent,
+                    pointerEvents = "none",
+                    children = {
+                        UI.Label {
+                            text = glyph,
+                            fontSize = 30,
+                            fontWeight = "bold",
+                            fontColor = { 255, 245, 214, 255 },
+                            pointerEvents = "none",
+                        },
+                    },
+                },
+                UI.Label {
+                    text = "方向：" .. label,
+                    fontSize = 12,
+                    fontWeight = "bold",
+                    fontColor = { 255, 245, 214, 255 },
+                    pointerEvents = "none",
+                },
+                UI.Label {
+                    text = "费用 2",
+                    fontSize = 8,
+                    fontWeight = "bold",
+                    fontColor = { 255, 217, 61, 255 },
+                    pointerEvents = "none",
+                },
+            },
+        }
+    end
+
+    directionPickerLayer_ = UI.Panel {
+        position = "absolute",
+        left = 0,
+        top = 0,
+        right = 0,
+        bottom = 0,
+        alignItems = "center",
+        justifyContent = "center",
+        gap = 18,
+        backgroundColor = { 6, 8, 20, 208 },
+        pointerEvents = "box-none",
+        zIndex = 460,
+        visible = false,
+        children = {
+            -- 独立空白点击区：不再依赖祖先 onClick，避免方向卡点击冒泡时关闭选择层
+            UI.Button {
+                text = "",
+                position = "absolute",
+                left = 0,
+                top = 0,
+                width = "100%",
+                height = "100%",
+                padding = 0,
+                backgroundColor = { 0, 0, 0, 0 },
+                borderWidth = 0,
+                zIndex = 1,
+                onClick = function()
+                    directionPicker_.pendingCancel = true
+                end,
+            },
+            UI.Panel {
+                width = "100%",
+                alignItems = "center",
+                gap = 18,
+                pointerEvents = "box-none",
+                zIndex = 2,
+                children = {
+                    UI.Label {
+                        text = "选择一张方向卡",
+                        fontSize = 16,
+                        fontWeight = "bold",
+                        fontColor = { 255, 217, 61, 255 },
+                        pointerEvents = "none",
+                    },
+                    UI.Label {
+                        text = "方向卡不会预先绑定变量；加入手牌后，拖到任意发光的矢量上生效",
+                        fontSize = 10,
+                        fontColor = { 200, 200, 224, 255 },
+                        pointerEvents = "none",
+                    },
+                    UI.Panel {
+                        flexDirection = "row",
+                        gap = 14,
+                        pointerEvents = "box-none",
+                        children = {
+                            CreateDirectionPickCard("vector_up"),
+                            CreateDirectionPickCard("vector_down"),
+                            CreateDirectionPickCard("vector_left"),
+                            CreateDirectionPickCard("vector_right"),
+                        },
+                    },
+                    UI.Label {
+                        text = "点击空白处取消",
+                        fontSize = 9,
+                        fontColor = { 160, 160, 192, 255 },
+                        pointerEvents = "none",
+                    },
+                },
+            },
+        },
+    }
+
+    cardResetButton_ = UI.Button {
+        text = "重置卡牌效果",
+        position = "absolute",
+        right = 24,
+        top = 74,
+        width = 142,
+        height = 40,
+        fontSize = 10,
+        backgroundColor = { 108, 45, 73, 245 },
+        borderColor = { 239, 108, 128, 255 },
+        zIndex = 980,
+        visible = false,
+        onClick = function()
+            directionPicker_.pendingReset = true
+        end,
+    }
+
+    firstPersonLeftButton_ = UI.Button {
+        text = "<",
+        position = "absolute",
+        left = 24,
+        top = "43%",
+        width = 62,
+        height = 70,
+        fontSize = 22,
+        onClick = function() NavigateFirstPerson("left") end,
+    }
+
+    firstPersonRightButton_ = UI.Button {
+        text = ">",
+        position = "absolute",
+        right = 24,
+        top = "43%",
+        width = 62,
+        height = 70,
+        fontSize = 22,
+        onClick = function() NavigateFirstPerson("right") end,
+    }
+
+    firstPersonUpButton_ = UI.Button {
+        text = "^",
+        position = "absolute",
+        left = "47%",
+        top = 68,
+        width = 68,
+        height = 54,
+        onClick = function() NavigateFirstPerson("up") end,
+    }
+
+    firstPersonDownButton_ = UI.Button {
+        text = "v",
+        position = "absolute",
+        left = "47%",
+        bottom = 26,
+        width = 68,
+        height = 54,
+        onClick = function() NavigateFirstPerson("down") end,
+    }
+
     firstPersonControls_ = UI.Panel {
         position = "absolute",
         left = 0,
@@ -1297,44 +2497,10 @@ local function BuildUI()
                 pointerEvents = "none",
                 children = { firstPersonViewLabel_ },
             },
-            UI.Button {
-                text = "<",
-                position = "absolute",
-                left = 24,
-                top = "43%",
-                width = 62,
-                height = 70,
-                fontSize = 22,
-                onClick = function() NavigateFirstPerson("left") end,
-            },
-            UI.Button {
-                text = ">",
-                position = "absolute",
-                right = 24,
-                top = "43%",
-                width = 62,
-                height = 70,
-                fontSize = 22,
-                onClick = function() NavigateFirstPerson("right") end,
-            },
-            UI.Button {
-                text = "^",
-                position = "absolute",
-                left = "47%",
-                top = 68,
-                width = 68,
-                height = 54,
-                onClick = function() NavigateFirstPerson("up") end,
-            },
-            UI.Button {
-                text = "v",
-                position = "absolute",
-                left = "47%",
-                bottom = 26,
-                width = 68,
-                height = 54,
-                onClick = function() NavigateFirstPerson("down") end,
-            },
+            firstPersonLeftButton_,
+            firstPersonRightButton_,
+            firstPersonUpButton_,
+            firstPersonDownButton_,
             UI.Button {
                 text = "调查",
                 position = "absolute",
@@ -1353,6 +2519,153 @@ local function BuildUI()
                 width = 78,
                 height = 48,
                 onClick = function() ExitFirstPersonRoom() end,
+            },
+        },
+    }
+
+    birthdayLetterLayer_ = UI.Panel {
+        position = "absolute",
+        left = 0,
+        right = 0,
+        top = 0,
+        bottom = 0,
+        alignItems = "center",
+        justifyContent = "center",
+        backgroundColor = { 0, 0, 0, 155 },
+        pointerEvents = "auto",
+        zIndex = 520,
+        visible = false,
+        children = {
+            UI.Panel {
+                width = "56%",
+                minHeight = 360,
+                padding = 28,
+                gap = 16,
+                alignItems = "center",
+                backgroundColor = { 240, 219, 172, 255 },
+                borderWidth = 4,
+                borderColor = { 92, 60, 39, 255 },
+                boxShadow = { { x = 8, y = 8, blur = 0, color = { 0, 0, 0, 145 } } },
+                children = {
+                    UI.Label {
+                        text = "教皇的礼物",
+                        fontSize = 18,
+                        fontWeight = "bold",
+                        fontColor = { 83, 45, 31, 255 },
+                        textAlign = "center",
+                    },
+                    UI.Panel {
+                        width = "86%",
+                        height = 3,
+                        backgroundColor = { 154, 103, 58, 255 },
+                    },
+                    UI.Label {
+                        text = "生日快乐！",
+                        fontSize = 17,
+                        fontWeight = "bold",
+                        fontColor = { 132, 55, 41, 255 },
+                        textAlign = "center",
+                    },
+                    UI.Label {
+                        text = "我为你准备了两张礼物卡。\n黄色 F=MG 能让物体响应重力矢量，\n紫色矢量改向卡则能改变 g 的方向。\n希望它们能帮你拿到窗台上的邀请函。",
+                        width = "88%",
+                        fontSize = 12,
+                        lineHeight = 1.65,
+                        whiteSpace = "normal",
+                        textAlign = "center",
+                        fontColor = { 61, 43, 36, 255 },
+                    },
+                    UI.Label {
+                        text = "—— 教皇",
+                        width = "86%",
+                        fontSize = 11,
+                        fontWeight = "bold",
+                        textAlign = "right",
+                        fontColor = { 92, 60, 39, 255 },
+                    },
+                    UI.Button {
+                        text = "收下两张卡",
+                        width = 180,
+                        height = 44,
+                        variant = "primary",
+                        onClick = function()
+                            birthdayLetterOpen_ = false
+                            birthdayLetterLayer_:Hide()
+                        end,
+                    },
+                },
+            },
+        },
+    }
+
+    cardTutorialLayer_ = UI.Panel {
+        position = "absolute",
+        left = 0,
+        right = 0,
+        top = 0,
+        bottom = 0,
+        alignItems = "center",
+        justifyContent = "center",
+        backgroundColor = { 0, 0, 0, 135 },
+        pointerEvents = "auto",
+        zIndex = 500,
+        visible = false,
+        children = {
+            UI.Panel {
+                width = "48%",
+                minHeight = 270,
+                padding = 24,
+                gap = 14,
+                alignItems = "center",
+                backgroundColor = { 15, 15, 35, 250 },
+                borderWidth = 4,
+                borderColor = { 33, 189, 174, 255 },
+                boxShadow = { { x = 8, y = 8, blur = 0, color = { 0, 0, 0, 155 } } },
+                children = {
+                    UI.Label {
+                        text = "卡牌教学",
+                        fontSize = 18,
+                        fontWeight = "bold",
+                        fontColor = { 255, 217, 61, 255 },
+                    },
+                    UI.Label {
+                        text = "先点击邀请函，将黄色 F=MG 拖入法则卡槽。\n公式生效后，点击卡槽内 F=MG 的矢量参数 g。\n再把紫色矢量改向卡拖到 g 上，选择 ↓ 让信封落下。",
+                        width = "92%",
+                        fontSize = 13,
+                        lineHeight = 1.55,
+                        whiteSpace = "normal",
+                        textAlign = "center",
+                        fontColor = { 240, 240, 240, 255 },
+                    },
+                    UI.Panel {
+                        width = "88%",
+                        padding = 12,
+                        backgroundColor = { 27, 27, 58, 255 },
+                        borderWidth = 2,
+                        borderColor = { 108, 92, 231, 255 },
+                        children = {
+                            UI.Label {
+                                text = "信封行动值 3  ·  F=MG 费用 1  ·  矢量改向费用 2\n总费用达到 3 后，方向决定信封的飞行效果。",
+                                fontSize = 10,
+                                lineHeight = 1.45,
+                                whiteSpace = "normal",
+                                textAlign = "center",
+                                fontColor = { 160, 160, 192, 255 },
+                            },
+                        },
+                    },
+                    UI.Button {
+                        text = "开始操作",
+                        width = 160,
+                        height = 44,
+                        variant = "primary",
+                        onClick = function()
+                            cardTutorialOpen_ = false
+                            gameState_.cardTutorialSeen = true
+                            cardTutorialLayer_:Hide()
+                        end,
+                    },
+                },
             },
         },
     }
@@ -1387,6 +2700,7 @@ local function BuildUI()
                 borderColor = { 108, 92, 231, 255 },
                 pointerEvents = "none",
                 children = {
+                    questLabel_,
                     modeHintLabel_,
                     inventoryLabel_,
                 },
@@ -1394,18 +2708,35 @@ local function BuildUI()
             overworldControls_,
             firstPersonControls_,
             cardHandPanel_,
+            directionPickerLayer_,
+            cardResetButton_,
             cardFeedbackLabel_,
             cardTooltipPanel_,
             cardDragGhost_,
             dialogPanel_,
+            cardTutorialLayer_,
+            birthdayLetterLayer_,
             transitionOverlay_,
+            openingPanel_,
         },
     }
 
     UI.SetRoot(root, true)
 end
 
-local function UpdateInventoryHUD()
+ShowBirthdayLetter = function()
+    if birthdayLetterLayer_ == nil then return end
+    birthdayLetterOpen_ = true
+    birthdayLetterLayer_:Show()
+end
+
+ShowCardTutorial = function()
+    if cardTutorialLayer_ == nil or gameState_.cardTutorialSeen then return end
+    cardTutorialOpen_ = true
+    cardTutorialLayer_:Show()
+end
+
+UpdateInventoryHUD = function()
     local entries = {}
     for itemId, item in pairs(gameState_.inventory) do
         table.insert(entries, item.name .. " ×" .. tostring(item.amount))
@@ -1418,7 +2749,7 @@ local function UpdateInventoryHUD()
     end
 end
 
-local function UpdateWorldScale()
+UpdateWorldScale = function()
     if currentMap_ == nil then return end
 
     if currentMap_.backgroundImage ~= nil then
@@ -1458,10 +2789,51 @@ local function PlayBGM(path)
 end
 
 local function BGMPathForMap(mapId)
+    if mapId == "tower_floor1" then
+        return "audio/music_1785678380652.ogg"
+    end
     if mapId == "home_upper" or mapId == "home_lower" then
-        return "audio/bgm_home.ogg"
+        return "audio/bgm_prologue_home.ogg"
     end
     return "audio/bgm_town.ogg"
+end
+
+UpdateQuestHUD = function()
+    if questLabel_ ~= nil then
+        questLabel_:SetText(Prologue.GetQuestText(prologue_))
+    end
+end
+
+local function BeginPrologueOpening()
+    if not Prologue.Begin(prologue_) then return end
+    titleLayer_:Hide()
+    introLayer_:Show()
+    introLayer_:SetOpacity(1.0)
+    PlayBGM("audio/bgm_prologue_home.ogg")
+end
+
+local function UpdatePrologueOpening(dt)
+    local action = Prologue.Update(prologue_, dt)
+    if action == "reveal_home" then
+        introSpeakerLabel_:SetText("")
+        introLineLabel_:SetText("")
+        PlayBGM("audio/bgm_prologue_home.ogg")
+    elseif action == "gameplay_started" then
+        openingPanel_:Hide()
+        overworldControls_:Show()
+        UpdateQuestHUD()
+    end
+
+    if Prologue.IsIntro(prologue_) then
+        local line = Prologue.GetIntroLine(prologue_)
+        local alpha = Prologue.GetIntroLineAlpha(prologue_)
+        introSpeakerLabel_:SetText(line.speaker)
+        introLineLabel_:SetText(line.text)
+        introSpeakerLabel_:SetOpacity(alpha)
+        introLineLabel_:SetOpacity(alpha)
+    elseif prologue_.phase == "reveal" then
+        introLayer_:SetOpacity(Prologue.GetRevealAlpha(prologue_))
+    end
 end
 
 LoadMap = function(id, spawnX, spawnY)
@@ -1484,10 +2856,37 @@ SwitchFirstPersonView = function(viewId)
 
     firstPerson_.viewId = viewId
     firstPersonViewLabel_:SetText(view.name)
+    UpdateCardResetButton()
     print("[Tower2D] First-person view: " .. viewId)
 end
 
 EnterFirstPersonRoom = function(portal)
+    if portal.roomId == "six_face_room" and not prologue_.motherTalked then
+        player_.x = portal.returnX or player_.x
+        player_.y = portal.returnY or (player_.y + 1)
+        player_.moving = false
+        transitionLock_ = 0.45
+        OpenHeroMonologue({
+            "母亲还在楼下等我。",
+            "先去找她吧，窗台房的事待会儿再说。",
+        })
+        print("[Prologue] Window room locked until mother dialogue")
+        return
+    end
+
+    if portal.roomId == "six_face_room" and not Prologue.CanEnterInvitationRoom(prologue_) then
+        player_.x = portal.returnX or player_.x
+        player_.y = portal.returnY or (player_.y + 1)
+        player_.moving = false
+        transitionLock_ = 0.45
+        OpenHeroMonologue({
+            "门锁中央有一道卡槽，旁边还刻着 F=MG。",
+            "我得先打开二楼那份“教皇的礼物”，拿到法则卡再回来。",
+        })
+        print("[Prologue] Window room locked until gravity card collected")
+        return
+    end
+
     local room = Maps.GetFirstPersonRoom(portal.roomId)
     if room == nil then return end
 
@@ -1501,10 +2900,16 @@ EnterFirstPersonRoom = function(portal)
     touchMove_ = { up = false, down = false, left = false, right = false }
     input.mouseMode = MM_ABSOLUTE
     overworldControls_:Hide()
+    CloseDirectionPicker()
     firstPersonControls_:Show()
-    modeHintLabel_:SetText("方向键 / WASD 切换视角  ·  E / 空格 调查  ·  Esc 离开")
+    modeHintLabel_:SetText("拖卡到发光目标  ·  方向卡作用于发光矢量  ·  右上角可随时重置  ·  Esc 离开")
+    firstPersonLeftButton_:Hide()
+    firstPersonRightButton_:Hide()
+    firstPersonUpButton_:Hide()
+    firstPersonDownButton_:Hide()
     locationLabel_:SetText(room.name)
     SwitchFirstPersonView(room.initialView)
+    PlayBGM("audio/bgm_prologue_intro.ogg")
     if cardHandPanel_ ~= nil then
         cardHandPanel_:Hide()
     end
@@ -1517,6 +2922,10 @@ EnterFirstPersonRoom = function(portal)
     CancelCardDrag()
     RebuildCardHand()
     cardHandPanel_:Show()
+    UpdateCardResetButton()
+    if room.id == "six_face_room" then
+        ShowCardTutorial()
+    end
     print("[Tower2D] Card hand shown")
     print("[Tower2D] Enter first-person room: " .. room.id)
 end
@@ -1530,11 +2939,18 @@ ExitFirstPersonRoom = function()
     local returnDirection = firstPerson_.returnDirection
     firstPerson_.active = false
     firstPerson_.room = nil
+    gravityLetter_.hovered = false
+    CloseDirectionPicker()
+    UpdateCardResetButton()
     CancelCardDrag()
     if cardHandPanel_ ~= nil then cardHandPanel_:Hide() end
     if cardFeedbackLabel_ ~= nil then cardFeedbackLabel_:Hide() end
     if cardTooltipPanel_ ~= nil then cardTooltipPanel_:Hide() end
     firstPersonControls_:Hide()
+    firstPersonLeftButton_:Show()
+    firstPersonRightButton_:Show()
+    firstPersonUpButton_:Show()
+    firstPersonDownButton_:Show()
     overworldControls_:Show()
     modeHintLabel_:SetText("方向键 / WASD 移动  ·  E / 空格 调查")
     input.mouseMode = MM_ABSOLUTE
@@ -1556,7 +2972,7 @@ OpenDialogue = function(target)
     dialogueLabel_:SetText("")
     continueLabel_:Hide()
 
-    local portrait = target.portrait or "image/主角洛恩像素头像_20260727071202.png"
+    local portrait = target.portrait or "image/新主角勇者立绘_20260731152743.png"
     portraitPanel_:SetStyle({ backgroundImage = portrait, backgroundFit = "contain" })
     if target.hidePortrait then
         portraitPanel_:Hide()
@@ -1568,21 +2984,91 @@ OpenDialogue = function(target)
 end
 
 local function CloseDialogue()
+    local completedSpeaker = dialog_.speaker
     dialog_.open = false
     dialog_.speaker = nil
+    dialogCloseLock_ = 0.20
     dialogPanel_:Hide()
+
+    if completedSpeaker ~= nil and completedSpeaker.showBirthdayLetterAfter then
+        ShowBirthdayLetter()
+    end
+
+    if completedSpeaker ~= nil and completedSpeaker.id == "mother" then
+        if Prologue.CompleteMotherTalk(prologue_) then
+            UpdateQuestHUD()
+        end
+    elseif completedSpeaker ~= nil and completedSpeaker.interaction == "tower_invitation" then
+        if Prologue.CollectInvitation(prologue_) then
+            gravityLetter_.active = false
+            gravityLetter_.collectible = false
+            gravityLetter_.collected = true
+            gameState_.inventory.tower_invitation = {
+                name = "高塔邀请函",
+                amount = 1,
+            }
+            UpdateInventoryHUD()
+            UpdateQuestHUD()
+            CloseDirectionPicker()
+            UpdateCardResetButton()
+            SetCardFeedback("已获得高塔邀请函。", { 255, 217, 61, 255 })
+        end
+    end
+end
+
+OpenInvitationDialogue = function()
+    if gravityLetter_.collected or prologue_.invitationCollected then
+        CloseDirectionPicker()
+        SetCardFeedback("邀请函已经收进背包了。", { 245, 205, 96, 255 })
+        return
+    end
+    CloseDirectionPicker()
+    OpenDialogue({
+        interaction = "tower_invitation",
+        name = "高塔邀请函",
+        portrait = "image/tower_invitation_letter.png",
+        lines = {
+            "你拾起盖着教皇火漆的邀请函，厚实纸面上还残留着法则卡的微光。",
+            "信封正面写着：致爬塔候选者洛恩。凭此函前往教堂内殿，接受主教祝福。",
+            "获得邀请函后，就可以前往教堂见主教了。",
+        },
+    })
+end
+
+function OpenHeroMonologue(lines, name)
+    OpenDialogue({
+        id = "hero_monologue",
+        name = name or "洛恩",
+        portrait = "image/主角洛恩像素头像_20260727071202.png",
+        lines = lines,
+    })
 end
 
 local function OpenChest(chest)
+    local rewardCardIds = chest.rewardCardIds
+        or (chest.rewardCardId ~= nil and { chest.rewardCardId } or nil)
     if gameState_.openedChests[chest.id] then
         OpenDialogue({
+            hidePortrait = rewardCardIds ~= nil,
             name = chest.name,
-            lines = { "箱盖敞开着，里面已经空了。" },
+            lines = rewardCardIds ~= nil
+                and { "丝绒衬垫已经空了。两张法则卡现在都在你的手牌中。" }
+                or { "箱盖敞开着，里面已经空了。" },
         })
         return
     end
 
     gameState_.openedChests[chest.id] = true
+    if rewardCardIds ~= nil then
+        for _, cardId in ipairs(rewardCardIds) do
+            gameState_.ownedCards[cardId] = true
+        end
+        cardHandDirty_ = true
+        if Prologue.CollectGravityCard(prologue_) then
+            UpdateQuestHUD()
+        end
+    end
+
     local item = gameState_.inventory[chest.itemId]
     if item == nil then
         item = { name = chest.itemName, amount = 0 }
@@ -1591,17 +3077,59 @@ local function OpenChest(chest)
     item.amount = item.amount + chest.amount
     UpdateInventoryHUD()
 
+    local lines = {}
+    for _, line in ipairs(chest.lines or {}) do table.insert(lines, line) end
+    table.insert(lines, "获得了 " .. chest.itemName .. " ×" .. tostring(chest.amount) .. "！")
+    if rewardCardIds ~= nil then
+        table.insert(lines, "黄色 F=MG 费用 1；矢量改向费用 2。窗台房门已经解锁。")
+    end
     OpenDialogue({
+        hidePortrait = rewardCardIds ~= nil,
         name = chest.name,
-        lines = {
-            chest.lines[1],
-            "获得了 " .. chest.itemName .. " ×" .. tostring(chest.amount) .. "！",
-        },
+        lines = lines,
     })
+    if rewardCardIds ~= nil then
+        dialog_.speaker.showBirthdayLetterAfter = true
+    end
     print("[Tower2D] Chest opened: " .. chest.id .. " / " .. chest.itemName)
 end
 
+local function GetMotherDialogueTarget(mother)
+    local lines = nil
+    if not prologue_.motherTalked then
+        lines = {}
+        for _, line in ipairs(mother.lines or {}) do table.insert(lines, line) end
+        if prologue_.gravityCardCollected then
+            table.insert(lines, "看来你已经拿到教皇的礼物了。很好，直接去二楼开门拿邀请函吧。")
+        end
+    elseif prologue_.invitationCollected then
+        lines = {
+            "邀请函已经拿到了，很好。",
+            "现在去教会找教皇吧，他正在等你。",
+        }
+    elseif prologue_.gravityCardCollected then
+        lines = {
+            "教皇的礼物已经在你手里了。",
+            "直接去二楼打开窗台房门，用那两张卡拿到邀请函吧。",
+        }
+    else
+        lines = {
+            "教皇送来的礼物还在二楼箱子里。",
+            "先把礼物拿上，再去窗台房取邀请函。",
+        }
+    end
+
+    return {
+        id = "mother",
+        name = mother.name,
+        portrait = mother.portrait,
+        lines = lines,
+    }
+end
+
 function AdvanceDialogueOrInteract()
+    if not dialog_.open and dialogCloseLock_ > 0 then return end
+
     if dialog_.open then
         local line = dialog_.lines[dialog_.index]
         if dialog_.visibleChars < utf8.len(line) then
@@ -1624,6 +3152,10 @@ function AdvanceDialogueOrInteract()
     end
 
     if firstPerson_.active then
+        if firstPerson_.viewId == "window" and gravityLetter_.collectible then
+            OpenInvitationDialogue()
+            return
+        end
         local view = firstPerson_.room.views[firstPerson_.viewId]
         OpenDialogue(view.target)
         return
@@ -1640,6 +3172,8 @@ function AdvanceDialogueOrInteract()
     if target ~= nil then
         if target.kind == "chest" then
             OpenChest(target)
+        elseif target.id == "mother" then
+            OpenDialogue(GetMotherDialogueTarget(target))
         else
             OpenDialogue(target)
         end
@@ -1773,7 +3307,7 @@ local function UpdateHeroAnimation(dt)
         return
     end
 
-    local frameDuration = 1.0 / 24.0
+    local frameDuration = 1.0 / 10.0
     heroFrameTimer_ = heroFrameTimer_ + dt
     while heroFrameTimer_ >= frameDuration do
         heroFrameTimer_ = heroFrameTimer_ - frameDuration
@@ -1850,6 +3384,22 @@ local function UpdatePlayer(dt)
         local tileY = math.floor(player_.y + 0.5)
         local portal = Maps.GetPortal(currentMap_, tileX, tileY)
         if portal ~= nil then
+            if currentMap_.id == "home_lower"
+                and portal.target == "village"
+                and not prologue_.invitationCollected then
+                player_.x = 7
+                player_.y = 9
+                player_.direction = "up"
+                player_.moving = false
+                transitionLock_ = 0.45
+                OpenHeroMonologue({
+                    "现在还不能出门。",
+                    "我得先拿到邀请函，再去教堂见主教。",
+                })
+                print("[Prologue] Home exit blocked until invitation collected")
+                return
+            end
+
             if portal.mode == "firstPerson" then
                 EnterFirstPersonRoom(portal)
             else
@@ -1885,6 +3435,15 @@ StrokeRect = function(x, y, w, h, color, width)
     nvgStrokeColor(vg_, nvgRGBA(color[1], color[2], color[3], color[4] or 255))
     nvgStrokeWidth(vg_, width)
     nvgStroke(vg_)
+end
+
+local function DrawPixelText(text, x, y, size, color, align)
+    if pixelFont_ < 0 then return end
+    nvgFontFaceId(vg_, pixelFont_)
+    nvgFontSize(vg_, size)
+    nvgTextAlign(vg_, align or (NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE))
+    nvgFillColor(vg_, nvgRGBA(color[1], color[2], color[3], color[4] or 255))
+    nvgText(vg_, x, y, text, nil)
 end
 
 TileToScreen = function(tx, ty)
@@ -1987,22 +3546,26 @@ local IMAGE_PATHS = {
     npcMira = "image/NPC村民米拉_48px.png",
     npcAda = "image/NPC公会长艾达_48px.png",
     fpDoor = "image/六面谜室_门墙_20260728112350.png",
-    fpWindow = "image/六面谜室_窗桌_20260728112348.png",
+    fpWindow = "image/edited_明亮高塔木阳台_20260801111714.png",
     fpMirror = "image/六面谜室_镜墙_20260728112345.png",
     fpShelves = "image/六面谜室_书架_20260728112342.png",
     fpCeiling = "image/六面谜室_天花板_20260728112345.png",
     fpFloor = "image/六面谜室_地板_20260728112337.png",
     optionRoomUpper = "image/edited_OptionRoom_2Nd清晰像素版_20260729155032.png",
     optionRoomLower = "image/OptionRoom_1nd.png",
-    villageBackground = "image/塔环国全新方墙村庄地图_20260731065315.png",
-    heroWalkDown = "sprites/lorn_hero_hd2d/walk_down.png",
-    heroWalkUp = "sprites/lorn_hero_hd2d/walk_up.png",
-    heroWalkLeft = "sprites/lorn_hero_hd2d/walk_left.png",
-    heroWalkRight = "sprites/lorn_hero_hd2d/walk_right.png",
-    heroIdleDown = "sprites/lorn_hero_hd2d/idle_down.png",
-    heroIdleUp = "sprites/lorn_hero_hd2d/idle_up.png",
-    heroIdleLeft = "sprites/lorn_hero_hd2d/idle_left.png",
-    heroIdleRight = "sprites/lorn_hero_hd2d/idle_right.png",
+    titleCover = "image/edited_牛顿牌正式开场封面_20260801070431.png",
+    gravityLetterFrames = "image/Temp_transparent.png",
+    churchInterior = "image/教堂内.png",
+    towerFloor1 = "image/塔1层.png",
+    villageBackground = "image/小镇外.png",
+    heroWalkDown = "sprites/lorn_hero_rework/walk_down.png",
+    heroWalkUp = "sprites/lorn_hero_rework/walk_up.png",
+    heroWalkLeft = "sprites/lorn_hero_rework/walk_left.png",
+    heroWalkRight = "sprites/lorn_hero_rework/walk_right.png",
+    heroIdleDown = "sprites/lorn_hero_rework/idle_down.png",
+    heroIdleUp = "sprites/lorn_hero_rework/idle_up.png",
+    heroIdleLeft = "sprites/lorn_hero_rework/idle_left.png",
+    heroIdleRight = "sprites/lorn_hero_rework/idle_right.png",
 }
 
 local function LoadImages()
@@ -2180,7 +3743,265 @@ local function DrawPlayer()
     end
 end
 
-local function DrawFirstPersonRoom()
+local function DrawAtlasRegion(handleKey, sourceX, sourceY, sourceW, sourceH, x, y, w, h, atlasW, atlasH)
+    local handle = imageHandles_[handleKey]
+    if handle == nil then return false end
+
+    nvgSave(vg_)
+    nvgScissor(vg_, x, y, w, h)
+    nvgBeginPath(vg_)
+    nvgRect(vg_, x, y, w, h)
+    nvgFillPaint(vg_, nvgImagePattern(
+        vg_,
+        x - sourceX * w / sourceW,
+        y - sourceY * h / sourceH,
+        atlasW * w / sourceW,
+        atlasH * h / sourceH,
+        0,
+        handle,
+        1.0
+    ))
+    nvgFill(vg_)
+    nvgRestore(vg_)
+    return true
+end
+
+function DrawAtlasRegionTinted(handleKey, sourceX, sourceY, sourceW, sourceH, x, y, w, h, atlasW, atlasH, color)
+    local handle = imageHandles_[handleKey]
+    if handle == nil then return false end
+
+    nvgSave(vg_)
+    nvgScissor(vg_, x, y, w, h)
+    nvgBeginPath(vg_)
+    nvgRect(vg_, x, y, w, h)
+    nvgFillPaint(vg_, nvgImagePatternTinted(
+        vg_,
+        x - sourceX * w / sourceW,
+        y - sourceY * h / sourceH,
+        atlasW * w / sourceW,
+        atlasH * h / sourceH,
+        0,
+        handle,
+        nvgRGBA(color[1], color[2], color[3], color[4] or 255)
+    ))
+    nvgFill(vg_)
+    nvgRestore(vg_)
+    return true
+end
+
+function DrawGravityLetter(x, y, w, h, glow)
+    local frameIndex = math.floor(gravityLetter_.animationTimer * 8.0) % 12
+    local sourceX = (frameIndex % 4) * 288
+    local sourceY = math.floor(frameIndex / 4) * 256
+
+    glow = math.max(0.0, math.min(1.0, glow or 0.0))
+    if glow > 0.01 then
+        local pulse = 0.82 + 0.18 * math.sin(gravityLetter_.animationTimer * 6.0)
+        local strength = glow * pulse
+        local spread = math.max(8, w * 0.10)
+
+        -- 安全的整体荧光底层：避免浏览器端复杂 Paint/复合模式造成 WASM 压力
+        FillRect(
+            x - spread,
+            y - spread,
+            w + spread * 2,
+            h + spread * 2,
+            { 255, 218, 92, math.floor(72 * strength) }
+        )
+
+        -- 四方向发光轮廓，明显但只额外绘制四次纹理
+        local ring = math.max(4, w * 0.045)
+        DrawAtlasRegionTinted(
+            "gravityLetterFrames", sourceX, sourceY, 288, 256,
+            x - ring, y, w, h, 1152, 768,
+            { 255, 226, 92, math.floor(220 * strength) }
+        )
+        DrawAtlasRegionTinted(
+            "gravityLetterFrames", sourceX, sourceY, 288, 256,
+            x + ring, y, w, h, 1152, 768,
+            { 255, 226, 92, math.floor(220 * strength) }
+        )
+        DrawAtlasRegionTinted(
+            "gravityLetterFrames", sourceX, sourceY, 288, 256,
+            x, y - ring, w, h, 1152, 768,
+            { 255, 226, 92, math.floor(220 * strength) }
+        )
+        DrawAtlasRegionTinted(
+            "gravityLetterFrames", sourceX, sourceY, 288, 256,
+            x, y + ring, w, h, 1152, 768,
+            { 255, 226, 92, math.floor(220 * strength) }
+        )
+    end
+
+    local drawn = DrawAtlasRegion(
+        "gravityLetterFrames",
+        sourceX,
+        sourceY,
+        288,
+        256,
+        x,
+        y,
+        w,
+        h,
+        1152,
+        768
+    )
+
+    -- 本体整体提亮，不使用浏览器端高风险复合模式
+    if glow > 0.01 then
+        DrawAtlasRegionTinted(
+            "gravityLetterFrames", sourceX, sourceY, 288, 256,
+            x, y, w, h, 1152, 768,
+            { 255, 238, 165, math.floor(92 * glow) }
+        )
+    end
+    return drawn
+end
+-- 目标锁定辅助线：四角括号 + 十字准星
+function DrawTargetGuides(x, y, w, h, alpha)
+    if alpha <= 0.01 then return end
+    local a = math.floor(255 * alpha)
+    local color = { 120, 245, 220, a }
+    local pad = math.max(6, w * 0.10)
+    local len = math.max(10, w * 0.22)
+    local left, top = x - pad, y - pad
+    local right, bottom = x + w + pad, y + h + pad
+
+    local function Line(x1, y1, x2, y2)
+        nvgBeginPath(vg_)
+        nvgMoveTo(vg_, x1, y1)
+        nvgLineTo(vg_, x2, y2)
+        nvgStrokeColor(vg_, nvgRGBA(color[1], color[2], color[3], color[4]))
+        nvgStrokeWidth(vg_, 2)
+        nvgStroke(vg_)
+    end
+
+    -- 四角括号
+    Line(left, top, left + len, top);        Line(left, top, left, top + len)
+    Line(right, top, right - len, top);      Line(right, top, right, top + len)
+    Line(left, bottom, left + len, bottom);  Line(left, bottom, left, bottom - len)
+    Line(right, bottom, right - len, bottom); Line(right, bottom, right, bottom - len)
+
+    -- 贯穿全屏的十字辅助线（淡）
+    local cx, cy = x + w * 0.5, y + h * 0.5
+    local faint = { 120, 245, 220, math.floor(70 * alpha) }
+    nvgBeginPath(vg_)
+    nvgMoveTo(vg_, 0, cy); nvgLineTo(vg_, logicalW_, cy)
+    nvgMoveTo(vg_, cx, 0); nvgLineTo(vg_, cx, logicalH_)
+    nvgStrokeColor(vg_, nvgRGBA(faint[1], faint[2], faint[3], faint[4]))
+    nvgStrokeWidth(vg_, 1)
+    nvgStroke(vg_)
+end
+
+-- 行动点徽标：画在信封正上方
+function DrawActionPoints(centerX, topY, spent, total, alpha)
+    if alpha <= 0.01 or total <= 0 then return end
+    local a = math.floor(255 * alpha)
+    local dot = math.max(9, logicalW_ * 0.011)
+    local gap = dot * 0.62
+    local totalW = total * dot + (total - 1) * gap
+    local startX = centerX - totalW * 0.5
+    local y = topY - dot * 2.1
+
+    DrawPixelText(
+        string.format("行动点  %d / %d", spent, total),
+        centerX, y - dot * 1.5, 15,
+        { 255, 236, 170, a },
+        NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE
+    )
+
+    for index = 1, total do
+        local cx = startX + (index - 1) * (dot + gap) + dot * 0.5
+        local filled = index <= spent
+        nvgBeginPath(vg_)
+        nvgCircle(vg_, cx, y + dot * 0.5, dot * 0.5)
+        if filled then
+            nvgFillColor(vg_, nvgRGBA(255, 209, 66, a))
+            nvgFill(vg_)
+        else
+            nvgFillColor(vg_, nvgRGBA(18, 20, 40, math.floor(a * 0.72)))
+            nvgFill(vg_)
+        end
+        nvgStrokeColor(vg_, nvgRGBA(255, 224, 130, a))
+        nvgStrokeWidth(vg_, 2)
+        nvgStroke(vg_)
+    end
+end
+
+-- 世界内公式浮层：F = m · g，其中 g 是可被方向卡替换的发光变量
+function DrawFormulaOverlay(centerX, bottomY, alpha)
+    if alpha <= 0.01 then return end
+    local a = math.floor(255 * alpha)
+    local fontSize = math.max(16, logicalW_ * 0.019)
+    local y = bottomY + fontSize * 1.5
+
+    local directionGlyph = ({
+        up = "↑", down = "↓", left = "←", right = "→",
+    })[gravityLetter_.vectorDirection] or ""
+
+    local prefix = "F = m ·"
+    -- 方向卡真正放到矢量上后才显示方向，避免提前绑定
+    local gText = gravityLetter_.vectorCardApplied and ("g " .. directionGlyph) or "g"
+
+    nvgFontFaceId(vg_, pixelFont_)
+    nvgFontSize(vg_, fontSize)
+    nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+    local prefixW = nvgTextBounds(vg_, 0, 0, prefix, nil)
+    local gW = nvgTextBounds(vg_, 0, 0, gText, nil)
+    local spacing = fontSize * 0.35
+    local totalW = prefixW + spacing + gW
+
+    local padX = fontSize * 0.7
+    local padY = fontSize * 0.45
+    local boxX = centerX - totalW * 0.5 - padX
+    local boxY = y - fontSize * 0.5 - padY
+    local boxW = totalW + padX * 2
+    local boxH = fontSize + padY * 2
+
+    FillRect(boxX, boxY, boxW, boxH, { 12, 14, 32, math.floor(a * 0.88) })
+    StrokeRect(boxX, boxY, boxW, boxH, { 255, 202, 48, a }, 2)
+
+    local textX = centerX - totalW * 0.5
+    DrawPixelText(prefix, textX, y, fontSize, { 255, 245, 214, a },
+        NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+
+    -- g 的命中框（供方向卡拖放）
+    local gx = textX + prefixW + spacing
+    formulaOverlay_.gx = gx - fontSize * 0.3
+    formulaOverlay_.gy = y - fontSize * 0.75
+    formulaOverlay_.gw = gW + fontSize * 0.6
+    formulaOverlay_.gh = fontSize * 1.5
+
+    local gGlow = formulaOverlay_.gGlow
+    if gGlow > 0.01 then
+        local pulse = 0.75 + 0.25 * math.sin(gravityLetter_.animationTimer * 7.0)
+        local glowAlpha = math.floor(150 * gGlow * pulse * alpha)
+        local glowPad = fontSize * 0.75
+        FillRect(
+            formulaOverlay_.gx - glowPad,
+            formulaOverlay_.gy - glowPad * 0.5,
+            formulaOverlay_.gw + glowPad * 2,
+            formulaOverlay_.gh + glowPad,
+            { 90, 220, 255, glowAlpha }
+        )
+        StrokeRect(
+            formulaOverlay_.gx,
+            formulaOverlay_.gy,
+            formulaOverlay_.gw,
+            formulaOverlay_.gh,
+            { 170, 248, 255, math.floor(255 * gGlow * alpha) },
+            gGlow > 0.95 and 4 or 3
+        )
+    end
+
+    local gColor = gGlow > 0.01
+        and { 170, 245, 255, a }
+        or { 255, 202, 48, a }
+    DrawPixelText(gText, gx, y, fontSize, gColor,
+        NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+end
+
+function DrawFirstPersonRoom()
     FillRect(0, 0, logicalW_, logicalH_, { 5, 5, 8 })
     if firstPerson_.room == nil then return end
 
@@ -2188,33 +4009,49 @@ local function DrawFirstPersonRoom()
     DrawImage(view.image, 0, 0, logicalW_, logicalH_)
 
     if firstPerson_.viewId == "window" and gravityLetter_.active then
-        local letterX = gravityLetter_.x * logicalW_
-        local letterY = gravityLetter_.y * logicalH_
-        local letterW = logicalW_ * 0.095
-        local letterH = logicalH_ * 0.11
-        FillRect(letterX, letterY, letterW, letterH, { 238, 220, 174, 255 })
-        StrokeRect(letterX, letterY, letterW, letterH, { 92, 65, 46, 255 }, 3)
-        FillRect(letterX + letterW * 0.08, letterY + letterH * 0.44, letterW * 0.84, 3, { 136, 102, 68, 255 })
-        FillRect(letterX + letterW * 0.08, letterY + letterH * 0.66, letterW * 0.58, 3, { 136, 102, 68, 255 })
-        if not gravityLetter_.fallen then
-            StrokeRect(
-                0.66 * logicalW_,
-                0.17 * logicalH_,
-                0.12 * logicalW_,
-                0.18 * logicalH_,
-                cardDrag_.active and { 87, 211, 190, 220 } or { 219, 176, 98, 115 },
-                cardDrag_.active and 4 or 2
+        -- 子弹时间暗角：拖拽时压暗全屏，突出可用目标
+        local dim = cardDrag_.active and 0.55 or 0.0
+        if dim > 0.0 then
+            FillRect(0, 0, logicalW_, logicalH_, { 4, 6, 20, math.floor(150 * dim) })
+        end
+
+        local letterX, letterY, letterW, letterH = GetGravityLetterLogicalRect()
+        DrawGravityLetter(
+            letterX,
+            letterY,
+            letterW,
+            letterH,
+            math.max(gravityLetter_.glowIntensity, gravityLetter_.hovered and 0.55 or 0.0)
+        )
+
+        -- 锁定辅助线：拖拽悬停到目标上时出现
+        if gravityLetter_.targetLocked then
+            DrawTargetGuides(letterX, letterY, letterW, letterH, 1.0)
+        end
+
+        -- 行动点：拖拽中或已投入卡牌时显示
+        local target = GetGravityLetterCardTarget()
+        if target ~= nil then
+            local spent = GetObjectCardCost("gravity_letter", true)
+            local pointsAlpha = 0.0
+            if cardDrag_.active then
+                pointsAlpha = 1.0
+            elseif spent > 0 or gravityLetter_.hovered then
+                pointsAlpha = 1.0
+            end
+            DrawActionPoints(
+                letterX + letterW * 0.5,
+                letterY,
+                spent,
+                target.actionValue or 0,
+                pointsAlpha
             )
         end
-    end
 
-    local hotspot = view.hotspot
-    if hotspot ~= nil then
-        local x = hotspot.x * logicalW_
-        local y = hotspot.y * logicalH_
-        local w = hotspot.w * logicalW_
-        local h = hotspot.h * logicalH_
-        StrokeRect(x, y, w, h, { 219, 176, 98, 85 }, 2)
+        -- 公式浮层
+        if formulaOverlay_.visible then
+            DrawFormulaOverlay(letterX + letterW * 0.5, letterY + letterH, 1.0)
+        end
     end
 end
 
@@ -2230,7 +4067,7 @@ UpdateWorldCamera = function()
     if mapPixelH < logicalH_ then cameraY_ = -(logicalH_ - mapPixelH) * 0.5 end
 end
 
-local function DrawWorld()
+function DrawWorld()
     if firstPerson_.active then
         DrawFirstPersonRoom()
         return
@@ -2282,7 +4119,7 @@ local function DrawWorld()
     DrawCollisionEditorOverlay()
 end
 
-local function DrawTransitionOverlay()
+function DrawTransitionOverlay()
     if floorTransition_.alpha <= 0.0 then return end
     FillRect(0, 0, logicalW_, logicalH_, {
         0,
@@ -2300,7 +4137,7 @@ function HandleNanoVGRender(eventType, eventData)
     nvgEndFrame(vg_)
 end
 
-local function HandleFirstPersonNavigation()
+function HandleFirstPersonNavigation()
     if not firstPerson_.active or dialog_.open or firstPerson_.room == nil then return end
 
     local direction = nil
@@ -2315,30 +4152,28 @@ local function HandleFirstPersonNavigation()
     if target ~= nil then SwitchFirstPersonView(target) end
 end
 
-local function HandleFirstPersonHotspotClick()
-    if cardDrag_.active then
-        return
-    end
+function HandleFirstPersonHotspotClick()
+    if cardDrag_.active then return end
     if not firstPerson_.active or dialog_.open or UI.IsPointerOverUI() then return end
     if not input:GetMouseButtonPress(MOUSEB_LEFT) then return end
 
-    local mousePos = input:GetMousePosition()
-    local x = mousePos.x / dpr_ / logicalW_
-    local y = mousePos.y / dpr_ / logicalH_
     local view = firstPerson_.room.views[firstPerson_.viewId]
-    if firstPerson_.viewId == "window" and gravityLetter_.fallen
-        and x >= gravityLetter_.x and x <= gravityLetter_.x + 0.095
-        and y >= gravityLetter_.y and y <= gravityLetter_.y + 0.11 then
-        OpenDialogue({
-            hidePortrait = true,
-            name = "落下的信",
-            lines = {
-                "信封正面写着：给仍相信万物会坠落的人。",
-                "里面只有一句话：法则不是答案，而是改变房间的钥匙。",
-            },
-        })
+    if firstPerson_.viewId == "window" and IsPointerOverGravityLetter() then
+        if gravityLetter_.collectible then
+            OpenInvitationDialogue()
+            return
+        end
+        if gameState_.objectCards.gravity_letter ~= nil then
+            SetCardFeedback("卡牌效果已生效；需要撤销时请点右上角“重置卡牌效果”。", { 255, 217, 61, 255 })
+        else
+            SetCardFeedback("把手牌里的卡拖到信封上使用。", { 255, 217, 61, 255 })
+        end
         return
     end
+
+    local mousePos = input:GetMousePosition()
+    local x = mousePos.x / math.max(1, graphics:GetWidth())
+    local y = mousePos.y / math.max(1, graphics:GetHeight())
     local hotspot = view.hotspot
     if hotspot ~= nil
         and x >= hotspot.x and x <= hotspot.x + hotspot.w
@@ -2348,17 +4183,45 @@ local function HandleFirstPersonHotspotClick()
 end
 
 ---@param eventType string
+---@param eventData VariantMap
+function HandleOpeningInput(eventType, eventData)
+    if Prologue.IsTitle(prologue_) then
+        BeginPrologueOpening()
+        return
+    end
+
+    if eventType ~= "KeyDown" and dialog_.open
+        and not birthdayLetterOpen_ and not cardTutorialOpen_ then
+        AdvanceDialogueOrInteract()
+    end
+end
+
+---@param eventType string
 ---@param eventData UpdateEventData
 function HandleUpdate(eventType, eventData)
     local dt = eventData:GetFloat("TimeStep")
+    dialogCloseLock_ = math.max(0.0, dialogCloseLock_ - dt)
+
+    if Prologue.IsTitle(prologue_) then
+        return
+    end
+    if not Prologue.IsGameplayReady(prologue_) then
+        UpdatePrologueOpening(dt)
+        player_.moving = false
+        UpdateHeroAnimation(dt)
+        return
+    end
+
     if cardFeedbackLabel_ ~= nil and cardFeedbackTimer_ > 0 then
         cardFeedbackTimer_ = math.max(0, cardFeedbackTimer_ - dt)
         if cardFeedbackTimer_ <= 0 then cardFeedbackLabel_:Hide() end
     end
+    ProcessPendingCardUIActions()
     if cardHandDirty_ and firstPerson_.active and not cardDrag_.active then
         RebuildCardHand()
     end
     UpdateGravityLetter(dt)
+    UpdateGravityLetterHover()
     UpdateDialogue(dt)
     UpdateFloorTransition(dt)
     UpdateTransitionOverlay()
@@ -2376,7 +4239,7 @@ function HandleUpdate(eventType, eventData)
         UpdateCardPointer()
         HandleFirstPersonNavigation()
         HandleFirstPersonHotspotClick()
-    elseif not dialog_.open and not floorTransition_.active then
+    elseif Prologue.IsGameplayReady(prologue_) and not dialog_.open and not floorTransition_.active then
         UpdatePlayer(dt)
     else
         player_.moving = false
@@ -2423,12 +4286,21 @@ function Start()
     BuildUI()
     UpdateInventoryHUD()
     LoadLocalCollisionPayload()
-    LoadMap("village")
+    LoadMap("home_upper", 16, 3)
+    if bgmSoundSource_ ~= nil then
+        bgmSoundSource_:Stop()
+        currentBgmPath_ = nil
+    end
+    overworldControls_:Hide()
+    UpdateQuestHUD()
     LoadCollisionCloudData()
     ResetHeroAnimation()
 
     SubscribeToEvent(vg_, "NanoVGRender", "HandleNanoVGRender")
     SubscribeToEvent("Update", "HandleUpdate")
+    SubscribeToEvent("KeyDown", "HandleOpeningInput")
+    SubscribeToEvent("MouseButtonDown", "HandleOpeningInput")
+    SubscribeToEvent("TouchBegin", "HandleOpeningInput")
     SubscribeToEvent("ScreenMode", "HandleScreenMode")
     print("[Tower2D] Pure 2D pixel RPG started")
 end

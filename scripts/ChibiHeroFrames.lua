@@ -1,5 +1,5 @@
 local CELL = 64
-local WALK_FRAME_COUNT = 12
+local WALK_FRAME_COUNT = 6
 
 local function Frames(count)
     local frames = {}
